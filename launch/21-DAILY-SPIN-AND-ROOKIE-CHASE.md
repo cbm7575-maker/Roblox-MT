@@ -1,10 +1,11 @@
 # 21. Daily spin wheel + easier first chase (Nov 6, 2026)
 
 **Status:** **LIVE as v14** (published Nov 7 2026, 03:13 UTC = Nov 6 evening, on the owner's "Build world wheel, then
-push"). No server restart: servers already running stay on v13 until they empty. Not committed to git yet.
+push"). No server restart: servers already running stay on v13 until they empty. Committed as 01442bf.
 **Then v15** (Nov 7, 03:26 UTC): the business session published the Empire businesses on top of v14. It checked
 that the Lucky Wheel scripts survived. Since then every live script (except DesignDoc) equals the working tree, so
-the five "live ≠ git" shas listed below are history. Live = the uncommitted working tree.
+the five "live ≠ git" shas listed below are history. Committed: 17f44c8 (Empire), 01442bf (this),
+4605e6b (the Empire start order), so git HEAD = live v15.
 
 ## Why
 
