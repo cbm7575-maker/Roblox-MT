@@ -52,11 +52,11 @@ local ORDER = {
 	"CarMeetService", -- before MapService: it builds the lot MapService lists
 	"DealershipService", -- before MapService: AutoNeon Motors + Marina Boat Sales
 	"HousingService", -- homes for sale (after GarageService / VehicleService)
-	"ApartmentService", -- apartment towers you can tour (after the lots it keeps clear of; MapService lists them)
-	"CityDressingService", -- Look 4.0 billboards, road wear and tall palms (after every lot it keeps clear of)
 	-- Empire: player businesses (after CrewService, JobService, CombatService; builds into Workspace.Shops before
 	-- ApartmentService and CityDressingService keep clear of it, and before MapService lists it)
 	"BusinessService",
+	"ApartmentService", -- apartment towers you can tour (after the lots it keeps clear of; MapService lists them)
+	"CityDressingService", -- Look 4.0 billboards, road wear and tall palms (after every lot it keeps clear of)
 	"MapService",
 	"DebugService", -- Studio only
 }
