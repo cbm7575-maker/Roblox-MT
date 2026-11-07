@@ -67,6 +67,11 @@ local function addXP(player, data, side, amount)
 	if amount <= 0 then
 		return
 	end
+	-- 2X XP from the daily spin wheel (SpinService sets BoostXPUntil, in server time).
+	local boostUntil = player:GetAttribute("BoostXPUntil")
+	if type(boostUntil) == "number" and boostUntil > workspace:GetServerTimeNow() then
+		amount *= 2
+	end
 	local key = sideKey(side)
 	local before = Progression.RankFor(data.xp[key] or 0)
 	data.xp[key] = (data.xp[key] or 0) + amount

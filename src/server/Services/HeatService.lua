@@ -6,6 +6,7 @@
 --     given a longer reach (RegisterEye(part, range)): the police helicopter's (PoliceHeliService).
 --   Not seen for 8 s -> hollow stars: cops only see a search circle around LastSeen.
 --   Not seen for 30 + 10 x heat seconds -> heat gone ("You lost the cops!").
+--   Rookies (Config.Tutorial.Rookie: no bag banked yet, 1-2 stars) go hollow after 5 s and get away after 30.
 --   EscapeFrom / EscapeAt (server times, GetServerTimeNow) are set only while the stars are hollow: when
 --     the unseen clock started (the last sighting or crime report) and when it will let you go. The
 --     HUD's LOSING THEM meter fills from one to the other; both clear the moment you're seen again.
@@ -22,7 +23,7 @@
 --   sees you) or "Off". RADAR below picks it; "Split" = each live server picks On or Off at random, so
 --   escape rates with and without the radar can be compared in the same week (Studio always gets On).
 -- Analytics: every chase end is logged (value = stars) as ChaseEnd_<how>_<radar>_<PvP|AI>, e.g.
---   ChaseEnd_Escaped_On_AI. <how> = Escaped (unseen timer, disguise, respray or banking at the Hideout),
+--   ChaseEnd_Escaped_On_AI (with _Rookie on the end for a rookie's gentle chase). <how> = Escaped (unseen timer, disguise, respray or banking at the Hideout),
 --   Arrested or Left (quit while wanted); PvP = a player cop was on the server at some point in the chase.
 
 local Players = game:GetService("Players")
@@ -33,6 +34,7 @@ local Workspace = game:GetService("Workspace")
 
 local Remotes = require(ReplicatedStorage.Shared.Util.Remotes)
 local Disguises = require(ReplicatedStorage.Shared.Config.Disguises)
+local Tutorial = require(ReplicatedStorage.Shared.Config.Tutorial)
 local Telemetry = require(ServerScriptService.Services.Telemetry)
 
 local HeatService = {}
@@ -119,6 +121,15 @@ local function escapeSeconds(heat)
 	return ESCAPE_BASE + ESCAPE_PER_STAR * heat
 end
 
+-- The same for one player: a rookie (Config.Tutorial.Rookie, before their first bag is banked) gets away
+-- sooner, and their stars go hollow sooner.
+local function escapeFor(player, heat)
+	return Tutorial.IsRookie(player) and Tutorial.Rookie.EscapeAfter or escapeSeconds(heat)
+end
+local function hollowFor(player)
+	return Tutorial.IsRookie(player) and Tutorial.Rookie.HollowAfter or HOLLOW_AFTER
+end
+
 -- The LOSING THEM meter's two ends (see the header); from = nil clears them. os.clock and server time
 -- meet here, so drifts under a quarter second are ignored (no attribute spam every tick).
 local function setEscape(player, from, at)
@@ -173,6 +184,10 @@ function HeatService.Add(player, amount, reason)
 	player:SetAttribute("HeatReason", reason)
 	-- The store camera (or the prison guards) saw what they look like.
 	noteClues(player)
+	-- A rookie's first chase: tell them the cops are going easy and what to do (Config.Tutorial.Rookie).
+	if before <= 0 and heat > 0 and notify and Tutorial.IsRookie(player) then
+		notify:FireClient(player, "RookieChase")
+	end
 end
 
 -- How each chase ended, for analytics (reasons passed to Clear; "role" = switched side, not logged).
@@ -184,7 +199,9 @@ local CHASE_END = {
 -- test is logged right too) and whether player cops were in it.
 local function logChaseEnd(player, how, heat)
 	local radar = tostring(ReplicatedStorage:GetAttribute("ChaseRadar") or "On")
-	Telemetry.Custom(player, "ChaseEnd_" .. how .. "_" .. radar .. (pvpChase[player] and "_PvP" or "_AI"), heat)
+	-- (_Rookie: a first-robbery chase with the gentle AI police, Config.Tutorial.Rookie.)
+	Telemetry.Custom(player, "ChaseEnd_" .. how .. "_" .. radar .. (pvpChase[player] and "_PvP" or "_AI")
+		.. (Tutorial.IsRookie(player) and "_Rookie" or ""), heat)
 end
 
 function HeatService.Clear(player, reason)
@@ -316,10 +333,10 @@ local function tick()
 				-- (Heat set straight on the attribute has no sighting yet: its unseen clock starts now.)
 				lastSeenAt[player] = lastSeenAt[player] or clock
 				local since = clock - lastSeenAt[player]
-				if player:GetAttribute("HeatSpotted") and since > HOLLOW_AFTER then
+				if player:GetAttribute("HeatSpotted") and since > hollowFor(player) then
 					player:SetAttribute("HeatSpotted", false)
 				end
-				if since > escapeSeconds(heat) then
+				if since > escapeFor(player, heat) then
 					local paid = escapeStars(player, heat)
 					if paid > 0 then
 						require(game:GetService("ServerScriptService").Services.ProgressService).Event(player, "Escape", paid)
@@ -333,7 +350,7 @@ local function tick()
 					-- meter fills exactly when the heat goes). A new crime or a lost star moves them.
 					if not player:GetAttribute("HeatSpotted") then
 						local from = now() - since
-						setEscape(player, from, from + escapeSeconds(heat))
+						setEscape(player, from, from + escapeFor(player, heat))
 					end
 					if heat >= 4 and clock - (lastPing[player] or 0) > PING_EVERY then
 						lastPing[player] = clock

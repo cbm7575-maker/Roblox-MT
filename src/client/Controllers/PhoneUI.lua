@@ -81,6 +81,9 @@
 --   GOALS     both ranks with their XP bars and next unlock, and today's challenges
 --   EMPIRE    player businesses (BusinessClient; only while BusinessesOn): your Empire rank, your businesses
 --             (register, GPS, COLLECT from the phone at Empire 5+), businesses for sale, and coming soon
+--   SPIN      the daily spin (SpinClient): today's spin or when the next comes, the 2X boosts running, and
+--             GPS TO THE LUCKY WHEEL (the wheel downtown where the spin happens; sets the GPS and puts the
+--             phone away). A red dot on the tile while a spin is ready.
 --   CREW      INVITE FRIENDS (Roblox's own invite pop-up, hidden when Roblox says this player can't send
 --             invites), THE BIG SCORE (the crew heist, BigScoreService: one line on whether you could
 --             start it right now, worked out here from your crew, rank, cooldown and whether another
@@ -210,6 +213,10 @@ local K = {
 		{ Name = "JOBS", Page = "Jobs", Color = Color3.fromRGB(208, 132, 38) },
 		{ Name = "SHOP", Page = "Shop", Color = Color3.fromRGB(136, 98, 222) },
 		{ Name = "GOALS", Page = "Goals", Color = Color3.fromRGB(200, 150, 32) },
+		-- The daily spin at the Lucky Wheel (SpinClient); Badge: a dot on the tile while today's spin is unused.
+		{ Name = "SPIN", Page = "Spin", Color = Color3.fromRGB(232, 168, 28), Badge = function()
+			return player:GetAttribute("SpinReady") == true
+		end },
 		{ Name = "CREW", Page = "Crew", Color = Color3.fromRGB(30, 160, 150) },
 		{ Name = "HOME", Page = "Home_", Color = Color3.fromRGB(224, 104, 58) },
 		-- Empire (BusinessClient): only while the feature runs in this server (Show; see Config.Businesses.Live).
@@ -870,6 +877,16 @@ W.glyph = {
 		W.block(g, "Hole1", 9, 13, 2, 2, ink, 1, 2)
 		W.block(g, "Hole2", 17, 13, 2, 2, ink, 1, 2)
 	end,
+	Spin = function(g, ink) -- a prize wheel: a ring, four spokes, a hub and the pointer on top
+		local wheel = W.block(g, "Wheel", 3, 5, 22, 22, nil, 11)
+		wheel.BackgroundTransparency = 1
+		W.ring(wheel, C.Text, 2.5)
+		for i, turn in ipairs({ 0, 45, 90, 135 }) do
+			W.block(g, "Spoke" .. i, 13, 7, 2, 18).Rotation = turn
+		end
+		W.block(g, "Hub", 10.5, 12.5, 7, 7, ink, 4, 2)
+		W.block(g, "Pin", 12, 0, 4, 6, nil, 1, 3)
+	end,
 	Goals = function(g) -- a trophy
 		local handles = W.block(g, "Handles", 4, 4, 20, 7, nil, 3)
 		handles.BackgroundTransparency = 1
@@ -1020,6 +1037,10 @@ function PAGES.Home()
 		local name = themeText(tile, app.Name, UDim2.new(1, 8, 0, labelH), UDim2.new(0, -4, 0, icon + 4), 13, "Display", nil,
 			Enum.TextXAlignment.Center, true)
 		name.Name = "Label"
+		if app.Badge and app.Badge() then
+			local dot = W.block(face, "Badge", icon - 9, -3, 12, 12, C.Danger, 6, 3)
+			dot.AnchorPoint = Vector2.zero
+		end
 		tile.Activated:Connect(function()
 			sfx("Click")
 			show(app.Page)
@@ -2212,6 +2233,51 @@ function PAGES.Shop()
 end
 
 ------------------------------------------------------------------ goals: ranks + daily challenges
+
+-- The daily spin (SpinClient): today's spin or when the next one comes, the boosts running, and a button
+-- that sets the GPS to the Lucky Wheel downtown, where the spin happens.
+function PAGES.Spin()
+	setHeader("DAILY SPIN", "Home")
+	local ok, SpinClient = pcall(function()
+		return require(script.Parent:WaitForChild("SpinClient", 2))
+	end)
+	if not ok or type(SpinClient) ~= "table" or type(SpinClient.Status) ~= "function" then
+		W.note(ui.screen, "The wheel is loading...", 0, C.Text, Enum.TextXAlignment.Center)
+		return
+	end
+	local st = SpinClient.Status()
+	local s = W.list(0)
+	local function hm(seconds)
+		seconds = math.max(0, math.floor(seconds or 0))
+		local h, m = seconds // 3600, (seconds % 3600) // 60
+		return h > 0 and (h .. "h " .. m .. "m") or (math.max(m, 1) .. "m")
+	end
+	W.item(s, {
+		Name = "Today", Order = 0,
+		Title = st.Ready and "YOUR FREE SPIN IS READY" or "TODAY'S SPIN IS USED", TitleColor = st.Ready and C.Gold or C.Text,
+		Sub = st.Ready and "Spin the Lucky Wheel downtown: cash, 2X CASH, 2X XP, a free gun, or a 1 in 18 shot at a supercar."
+			or ("Next free spin in " .. hm(st.NextIn) .. ". Anyone can watch the wheel downtown."),
+		Meta = "LUCKY WHEEL  ·  " .. GPSClient.FormatDistance(GPSClient.Distance(SpinClient.WheelPos()) or 0),
+		MetaColor = C.Gold,
+	})
+	for i, kind in ipairs({ "Cash", "XP" }) do
+		if (st[kind] or 0) > 0 then
+			W.item(s, {
+				Name = "Boost" .. kind, Order = i,
+				Title = "2X " .. string.upper(kind) .. " ON", TitleColor = kind == "Cash" and C.Cash or C.Purple,
+				Sub = hm(st[kind]) .. " of play left",
+			})
+		end
+	end
+	local open = W.button(s, "OpenWheel", "GPS TO THE LUCKY WHEEL", st.Ready and "Primary" or "Quiet", function()
+		SpinClient.RouteToWheel()
+		PhoneUI.Close()
+	end)
+	open.Size = UDim2.new(1, 0, 0, touchHeight())
+	open.LayoutOrder = 10
+	W.note(s, "One spin a day for everyone. Every slice of the wheel is the same size: each one is a 1 in 18 chance. "
+		.. "Boosts only count down while you play.", 20, nil, Enum.TextXAlignment.Center)
+end
 
 function PAGES.Goals()
 	setHeader("GOALS", "Home")

@@ -49,6 +49,7 @@ local ORDER = {
 	"TutorialClient",
 	"ShopClient",
 	"OfferClient", -- right-moment pass offers (needs HUDController, NotifyController, SettingsClient)
+	"SpinClient", -- the daily spin wheel and its 2X pills (needs HUDController, NotifyController; PhoneUI, CombatClient's pills softly)
 	"MinimapClient",
 	"MapClient", -- the big map: tap the minimap (or M) to see the whole city and set a waypoint (needs MinimapClient, GPSClient)
 	"ProgressClient",

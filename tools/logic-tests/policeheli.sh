@@ -436,7 +436,8 @@ local ws = game:GetService("Workspace")
 ws.Heists = { GetChildren = function() return {} end }
 function ws:Raycast() return nil end -- (nothing in the way)
 Color3 = { fromRGB = function(r, g, b) return { R = r / 255, G = g / 255, B = b / 255 } end }
-game:GetService("ReplicatedStorage").Shared.Config = { Disguises = { Describe = function() return "plain" end } }
+game:GetService("ReplicatedStorage").Shared.Config = { Disguises = { Describe = function() return "plain" end },
+	Tutorial = { Rookie = { MaxStars = 2, SpeedScale = 0.7, HeadStart = 20, HollowAfter = 5, EscapeAfter = 30, NoTaser = true }, IsRookie = function() return false end } }
 local sss = game:GetService("ServerScriptService")
 sss.Services.Telemetry = { Custom = function() end }
 sss.Services.ProgressService = { Event = function() end }

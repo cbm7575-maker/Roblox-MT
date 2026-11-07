@@ -403,6 +403,10 @@ local HANDLERS = {
 	Escaped = function(d)
 		post("@CoastFeed", textOr(d.Name, "Someone") .. " gave the cops the slip!", C.Brand)
 	end,
+	-- A big win on the Lucky Wheel downtown (SpinService: the car, or $10,000+).
+	WheelWin = function(d)
+		post("@CoastFeed", textOr(d.Name, "Someone") .. " just won " .. textOr(d.Prize, "big") .. " on the Lucky Wheel downtown!", C.Gold)
+	end,
 	-- A robber bot (RobberBotService) broke into a parked car; its alarm is ringing there.
 	BotCarjack = function()
 		if player:GetAttribute("Side") == "Cop" then

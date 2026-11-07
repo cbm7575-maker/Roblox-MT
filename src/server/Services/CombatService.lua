@@ -83,7 +83,7 @@
 --     can't hit each other. Swimmers can't attack (they can't be knocked out, so it would be one-sided).
 --   * Safe zones (attribute InSafeZone, checked twice a second): 60 studs around team spawns, the
 --     Hideout and Police HQ; dealerships (+20), homes (+10) and anyone inside one (InHome); the Car Meet
---     lot; Coast Arms (+10). Zone boxes are cached and rebuilt when those folders change.
+--     lot; Coast Arms (+10); the Lucky Wheel's stage (+12). Zone boxes are cached and rebuilt when those folders change.
 --   * Passive mode (phone SETTINGS -> SettingsService -> CombatService.RequestPassive): refused while
 --     wanted, carrying a bag, hurt, down, just after swinging or firing, or on duty as a cop; 60 s before
 --     turning it back on, 10 s before turning it off. Getting heat or a bag, or starting a crime (Rob,
@@ -428,6 +428,11 @@ local function rebuildZones()
 	local meet = acts and acts:FindFirstChild("CarMeet")
 	if meet then
 		addBox(list, meet, 2, 20)
+	end
+	-- The Lucky Wheel's plaza (SpinService): a crowd watching a spin shouldn't get robbed.
+	local wheel = Workspace:FindFirstChild("LuckyWheel")
+	if wheel then
+		addBox(list, wheel, safe.WheelMargin or 12, 20)
 	end
 	local shops = Workspace:FindFirstChild("Shops")
 	local store = shops and shops:FindFirstChild(SHOP.Model)
@@ -3288,6 +3293,28 @@ function CombatService.Init()
 			end
 		end
 	end)
+end
+
+-- Give a citizen gun for free (the daily spin wheel, SpinService). Returns true if it's now theirs, false if
+-- they already had it, the id isn't a citizen gun, or their save isn't loaded. Rank isn't checked here: the
+-- wheel only offers guns their rank can buy.
+function CombatService.GiveGun(player, gunId)
+	local gun = table.find(Combat.GunOrder, gunId) ~= nil and Combat.Guns[gunId] or nil
+	local data = DataService.Get(player)
+	if not gun or not data then
+		return false
+	end
+	local gear = gearOf(data)
+	if gear.guns[gun.Id] == true then
+		return false
+	end
+	gear.guns[gun.Id] = true
+	player:SetAttribute("Guns", gunsString(gear.guns))
+	local ok, err = pcall(syncTools, player)
+	if not ok then
+		warn("[CombatService] tools for " .. player.Name .. ": " .. tostring(err))
+	end
+	return true
 end
 
 return CombatService

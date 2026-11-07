@@ -16,6 +16,7 @@ local ORDER = {
 	"TutorialService",
 	"ShopService",
 	"DailyService",
+	"SpinService", -- the daily spin wheel (Config.Spin): cash, 2X CASH / 2X XP, a free gun or car
 	"ProgressService",
 	"JourneyService", -- goal chains after the tutorial (Road to the Coast)
 	"CrewService",

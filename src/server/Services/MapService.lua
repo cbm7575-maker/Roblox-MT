@@ -58,6 +58,13 @@ local function collect()
 	for _, race in ipairs(Activities.Races or {}) do
 		add(race.Name, "Street race", "Activity", race.Start, nil, race.Boat and "BoatRace" or "Race")
 	end
+	-- The Lucky Wheel downtown (SpinService builds it at start-up): the daily free spin.
+	local okW, wheel = pcall(function()
+		return require(game:GetService("ServerScriptService").Services.SpinService).Place
+	end)
+	if okW and type(wheel) == "table" and wheel.Pos then
+		add(wheel.Name, wheel.Kind, "Activity", wheel.Pos)
+	end
 	for _, stunt in ipairs(Activities.Stunts or {}) do
 		add(stunt.Name, "Stunt jump", "Activity", stunt.Ramp, nil, "Stunt")
 	end

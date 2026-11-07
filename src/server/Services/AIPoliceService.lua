@@ -16,6 +16,9 @@
 --     are close or can see the target. Where no road is in either ring (e.g. out on Lighthouse Key)
 --     they use the road node nearest 350 studs that is at least 150 away, so no spot is a free escape.
 --   * They never go faster than 95% of the target's car, so a good driver can always escape.
+--   * Rookies (Config.Tutorial.Rookie: a citizen who hasn't banked a first bag, at 1-2 stars) get patrols
+--     held to 70% of their car's speed (and at least a 20 s head start at 2 stars too), so the tutorial's
+--     first chase is a real chase they can win.
 --   * Stuck (slow for 2 s) -> reverse and turn; upside down -> flipped back.
 --   * They are cop "eyes" for HeatService, and arrest a wanted player who stays stopped (car under
 --     8 studs/s, or on foot under 10) within 22 studs (and under ARREST_RISE above or below: not
@@ -63,6 +66,7 @@ local Workspace = game:GetService("Workspace")
 local CarPhysics = require(ReplicatedStorage.Shared.Util.CarPhysics)
 local RoadGraph = require(ReplicatedStorage.Shared.Util.RoadGraph)
 local Remotes = require(ReplicatedStorage.Shared.Util.Remotes)
+local Tutorial = require(ReplicatedStorage.Shared.Config.Tutorial)
 local CarBuilder = require(ServerStorage.Tools.CarBuilder)
 local HeatService = require(ServerScriptService.Services.HeatService)
 local Officers = require(ServerScriptService.Services.PoliceOfficerService)
@@ -282,6 +286,9 @@ local function arrivalTime(p)
 		since = wantedAt[p]
 	end
 	local stars = math.clamp(math.floor(p:GetAttribute("Heat") or 1), 1, #GRACE)
+	if Tutorial.IsRookie(p) then -- first robbery: a longer head start (Config.Tutorial.Rookie)
+		return since + math.max(GRACE[stars], Tutorial.Rookie.HeadStart)
+	end
 	return since + GRACE[stars]
 end
 
@@ -555,8 +562,9 @@ local function drive(u, dt, now)
 		u.upsideFor = 0
 	end
 
-	-- Never faster than 95% of the target's car.
-	local scale = math.min(1, (info.maxSpeed * 0.95) / (car:GetAttribute("MaxSpeed") or 135))
+	-- Never faster than 95% of the target's car (a rookie's: Config.Tutorial.Rookie.SpeedScale).
+	local share = Tutorial.IsRookie(p) and Tutorial.Rookie.SpeedScale or 0.95
+	local scale = math.min(1, (info.maxSpeed * share) / (car:GetAttribute("MaxSpeed") or 135))
 	CarPhysics.Step(u.phys, dt, { Throttle = throttle, Steer = steer, SpeedScale = scale })
 
 	-- Arrest a target who stays (nearly) stopped right next to us. Brief wiggles don't reset the

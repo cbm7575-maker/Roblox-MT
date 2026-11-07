@@ -4,12 +4,20 @@
 --   Carried - money in the robber's bag (lost on arrest, banked at a hideout)
 -- Both live as player attributes (clients read them for the HUD) and Cash also shows on the leaderboard.
 -- Every change carries a reason string for analytics (step 4.7).
+-- 2X CASH (the daily spin wheel, Config.Spin): while the player attribute BoostCashUntil is ahead of the
+-- server clock, AddCash pays the same again for reasons in Spin.DoubleCash, and BankCarried pays the
+-- banked bag again. The extra is its own "spinboost:<reason>" cash (never doubled itself), and the client
+-- hears of it through the BoostPaid remote (SpinClient's "2X CASH +$500" pop). AddCash still returns the
+-- amount asked for, so callers that show their own pay see what they expect.
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Workspace = game:GetService("Workspace")
 
 local Heists = require(ReplicatedStorage.Shared.Config.Heists)
 local Shop = require(ReplicatedStorage.Shared.Config.Shop)
+local Spin = require(ReplicatedStorage.Shared.Config.Spin)
+local Remotes = require(ReplicatedStorage.Shared.Util.Remotes)
 
 local EconomyService = {}
 
@@ -57,6 +65,21 @@ function EconomyService.SetCash(player, value)
 	setCash(player, math.max(0, dollars(value) or 0))
 end
 
+-- 2X CASH is on for this player (the spin wheel's boost).
+local function boosted(player)
+	local untilT = player:GetAttribute("BoostCashUntil")
+	return type(untilT) == "number" and untilT > Workspace:GetServerTimeNow()
+end
+
+-- Pay the 2X CASH extra: `amount` again, as "spinboost:<what>".
+local function payBoost(player, amount, what)
+	setCash(player, EconomyService.GetCash(player) + amount)
+	record(player, "cash+", amount, "spinboost:" .. what)
+	pcall(function()
+		Remotes.Event("BoostPaid"):FireClient(player, amount)
+	end)
+end
+
 function EconomyService.AddCash(player, amount, reason)
 	amount = dollars(amount)
 	if not amount or amount <= 0 then
@@ -64,6 +87,10 @@ function EconomyService.AddCash(player, amount, reason)
 	end
 	setCash(player, EconomyService.GetCash(player) + amount)
 	record(player, "cash+", amount, reason)
+	local prefix = string.match(tostring(reason), "^([^:]+)")
+	if prefix and Spin.DoubleCash[prefix] and boosted(player) then
+		payBoost(player, amount, prefix)
+	end
 	return amount
 end
 
@@ -121,6 +148,9 @@ function EconomyService.BankCarried(player, reason)
 	local amount = EconomyService.TakeCarried(player, reason)
 	if amount > 0 then
 		EconomyService.AddCash(player, amount, reason)
+		if boosted(player) then
+			payBoost(player, amount, "bank") -- (bag money isn't in Spin.DoubleCash: it's doubled here, once)
+		end
 		Telemetry.Custom(player, "Banked", amount)
 		for _, fn in ipairs(bankedListeners) do
 			task.spawn(fn, player, amount)

@@ -74,6 +74,7 @@ local Workspace = game:GetService("Workspace")
 
 local Combat = require(ReplicatedStorage.Shared.Config.Combat)
 local Remotes = require(ReplicatedStorage.Shared.Util.Remotes)
+local Tutorial = require(ReplicatedStorage.Shared.Config.Tutorial)
 local RateLimit = require(ReplicatedStorage.Shared.Util.RateLimit)
 local HeatService = require(ServerScriptService.Services.HeatService)
 
@@ -674,7 +675,8 @@ local function taserStep(o, p, troot, dist, los, fair, t)
 		end
 		return
 	end
-	if fair and los and dist <= K.TASER_RANGE and t >= o.nextTaser then
+	-- (Never at a rookie on their first robbery: Config.Tutorial.Rookie.NoTaser.)
+	if fair and los and dist <= K.TASER_RANGE and t >= o.nextTaser and not (Tutorial.Rookie.NoTaser and Tutorial.IsRookie(p)) then
 		o.taserAt = t + K.TASER_WINDUP
 		o.nextTaser = t + K.TASER_COOLDOWN
 		taserUp(o, true)

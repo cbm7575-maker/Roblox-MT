@@ -19,4 +19,39 @@ Tutorial.Steps = {
 	{ Id = "phone", Text = "Open your PHONE (tap it or press P): your cars live in GARAGE", Show = "Garage" },
 }
 
+-- Rookie chase (owner, Nov 6 2026: "make the cop slower for the first rob, since people don't understand
+-- and it's hard for them"). New players left after ~6 minutes, and the tutorial's "lose the cops" step
+-- is the first hard thing they meet. Until a citizen has banked a first bag (the "bank" step), and while
+-- they're at MaxStars or fewer, the AI police go easy on them:
+--   SpeedScale   patrol cars drive at most this share of the rookie's car speed (everyone else: 0.95)
+--   HeadStart    at least this many seconds before the first patrol comes (everyone else: 20 s at 1 star,
+--                14 s at 2). Not longer than 20: the heat is added when the robbery ends and the unseen clock
+--                starts then, so a longer head start than EscapeAfter would mean no police car ever shows up.
+--                A slow car you can outrun is the point, not no chase at all.
+--   HollowAfter  seconds unseen before the stars go hollow (everyone else: 8)
+--   EscapeAfter  seconds unseen before the heat is gone (everyone else: 30 + 10 x stars, so 40 at 1 star)
+--   NoTaser      officers on foot don't taser them (they still cuff someone who stands still)
+-- A rookie arrested before banking stays a rookie, so the next try is just as gentle.
+Tutorial.Rookie = { MaxStars = 2, SpeedScale = 0.7, HeadStart = 20, HollowAfter = 5, EscapeAfter = 30, NoTaser = true }
+
+local BANK_STEP = 0
+for i, step in ipairs(Tutorial.Steps) do
+	if step.Id == "bank" then
+		BANK_STEP = i
+	end
+end
+
+-- True for a citizen who hasn't banked a first bag yet and isn't past Rookie.MaxStars. Reads the
+-- TutorialStep attribute (TutorialService): a player whose save hasn't loaded yet is not a rookie.
+function Tutorial.IsRookie(player)
+	local step = player:GetAttribute("TutorialStep")
+	if type(step) ~= "number" or step >= BANK_STEP then
+		return false
+	end
+	if player:GetAttribute("Side") ~= "Civilian" then
+		return false
+	end
+	return (player:GetAttribute("Heat") or 0) <= Tutorial.Rookie.MaxStars
+end
+
 return Tutorial

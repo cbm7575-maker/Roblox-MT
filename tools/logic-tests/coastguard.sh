@@ -243,7 +243,8 @@ local sss = game:GetService("ServerScriptService")
 sss.Services.HeatService = HS
 sss.Services.PoliceOfficerService = OFF
 sss.Services.ArrestService = AS
-game:GetService("ReplicatedStorage").Shared = { Util = { CarPhysics = CP, RoadGraph = RG, Remotes = Remotes } }
+game:GetService("ReplicatedStorage").Shared = { Util = { CarPhysics = CP, RoadGraph = RG, Remotes = Remotes },
+	Config = { Tutorial = { Rookie = { MaxStars = 2, SpeedScale = 0.7, HeadStart = 20, HollowAfter = 5, EscapeAfter = 30, NoTaser = true }, IsRookie = function() return false end } } } -- (players here are never rookies: tools/logic-tests/spin.sh tests that)
 game:GetService("RunService").Heartbeat = newSignal()
 local SS = { Tools = { CarBuilder = CB } }
 local baseGetService = game.GetService

@@ -207,6 +207,7 @@ Combat.SafeZone = {
 	DealerMargin = 20, -- around each dealership's bounding box
 	HomeMargin = 10, -- around each home's bounding box
 	ShopMargin = 10, -- around Coast Arms
+	WheelMargin = 12, -- around the Lucky Wheel (SpinService): people stand around watching spins
 }
 
 -- Coast Arms, the gun store (built by CombatService): lot centre, the front faces west toward the

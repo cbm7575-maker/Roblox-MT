@@ -611,4 +611,20 @@ function GarageService.Init()
 	end)
 end
 
+-- Give a car or boat for free (the daily spin wheel, SpinService). Returns true if it's now theirs, false if
+-- they already own it (GarageService.Owns), it's a pass, cop or hidden vehicle, or their save isn't loaded.
+function GarageService.Give(player, id)
+	local def = Vehicles.ById[id]
+	if not def or def.Pass or def.UnlockCopRank or def.Police or def.Hidden or GarageService.Owns(player, id) then
+		return false
+	end
+	local data = profile(player)
+	if not data then
+		return false
+	end
+	data.owned[id] = true
+	mirror(player)
+	return true
+end
+
 return GarageService

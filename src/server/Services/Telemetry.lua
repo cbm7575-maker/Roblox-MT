@@ -37,6 +37,7 @@ local TYPES = { -- reason prefix -> transaction type
 	underglow = kind("Shop"),
 	tutorial = kind("Onboarding"),
 	daily = kind("TimedReward"),
+	spin = kind("TimedReward"), -- the daily spin wheel's cash (SpinService)
 }
 
 function Telemetry.Economy(player, amount, balance, reason)
