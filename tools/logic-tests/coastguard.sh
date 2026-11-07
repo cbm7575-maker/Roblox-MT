@@ -2,9 +2,12 @@
 # AIPoliceService logic tests (the Coast Guard): prelude + a flat stand-in world with an ocean, the prison
 # moat, a pier and a beach, kinematic stand-in vehicles (not CarPhysics: this checks the decisions, not
 # the handling) + AIPoliceService source (as a function) + scenario. Every line should read PASS.
+# Also the star ladder on land (Config.Wanted, Nov 7): head start, cars and speed by stars, and the 1-2 star
+# search (seen and then lost: the patrols look round LastSeen instead of driving to the player).
 H="$(cd "$(dirname "$0")" && pwd)"
 L="${LUAU:-luau}" # the Luau CLI (github.com/luau-lang/luau releases); set LUAU to its path
 SRC="${1:-$H/../../src/server/Services/AIPoliceService.lua}" # another copy of AIPoliceService.lua to test, if given
+WANTED="${2:-$H/../../src/shared/Config/Wanted.lua}" # the real star table
 OUT="${TMPDIR:-${TEMP:-/tmp}}/theft-logic-tests"
 mkdir -p "$OUT"
 
@@ -39,6 +42,13 @@ V.__div = function(a, b) return Vector3.new(a.X / b, a.Y / b, a.Z / b) end
 V.__unm = function(a) return Vector3.new(-a.X, -a.Y, -a.Z) end
 V.Dot = function(a, b) return a.X * b.X + a.Y * b.Y + a.Z * b.Z end
 Vector3.zero = Vector3.new(0, 0, 0)
+local baseTypeof = typeof
+typeof = function(v) -- (as Roblox's: these stand-in vectors read as "Vector3")
+	if type(v) == "table" and getmetatable(v) == V then
+		return "Vector3"
+	end
+	return baseTypeof(v)
+end
 
 CFrame = {}
 local function cfOf(pos, look)
@@ -90,7 +100,8 @@ function ws:FindFirstChild(name) return rawget(self, name) end
 function ws:GetServerTimeNow() return clock() end
 function ws:Raycast(origin, dir, params)
 	if math.abs(dir.X) > 1e-6 or math.abs(dir.Z) > 1e-6 or dir.Y >= 0 then
-		return nil -- sight lines: nothing stands in the way in this flat world
+		-- Sight lines: nothing stands in the way in this flat world, unless BLIND (buildings in between).
+		return BLIND and { Position = origin, Instance = {} } or nil
 	end
 	local bottom = origin.Y + dir.Y
 	for _, s in ipairs(column(origin.X, origin.Z)) do
@@ -219,8 +230,10 @@ STEP_BOAT = {} -- info.boat as the officers saw it (PoliceOfficerService.Step)
 BOARD_CREW = false
 local OFF = { __module = true }
 function OFF.Board() return BOARD_CREW and {} or nil end
-function OFF.Step(_, _, _, info)
+STEP_SEARCH = nil -- the last `searching` the officers were told (PoliceOfficerService.Step)
+function OFF.Step(_, _, _, info, _, searching)
 	table.insert(STEP_BOAT, info ~= nil and info.boat == true)
+	STEP_SEARCH = searching == true
 	return "ride"
 end
 function OFF.Remove() end
@@ -365,6 +378,9 @@ scenario() {
 	{
 		cat "$H/prelude.luau"
 		echo "$STUBS"
+		echo 'game:GetService("ReplicatedStorage").Shared.Config.Wanted = (function()'
+		cat "$WANTED"
+		echo "end)()"
 		echo "$HELPERS"
 		echo "local AIPolice = (function()"
 		cat "$SRC"
@@ -532,3 +548,165 @@ check("3 stars with one player cop: three cars", patrols() == 3, patrols())
 copPlayer(11)
 sim(5, run)
 check("a second player cop on duty: the AI cars go", patrols() == 0, patrols())'
+
+# ---------------------------------------------------------------- the star ladder (Config.Wanted, Nov 7)
+
+scenario head_start_by_stars '
+local a = wantedPlayer(1, 1, Vector3.new(-1500, 3, -1500))
+local b = wantedPlayer(2, 2, Vector3.new(-1500, 3, 1500))
+local c = wantedPlayer(3, 3, Vector3.new(1000, 3, -1500))
+local d = wantedPlayer(4, 4, Vector3.new(1000, 3, 1500))
+sim(2)
+local function wait(p) return (p:GetAttribute("PoliceETA") or 0) - p:GetAttribute("WantedSince") end
+check("1 star: patrols arrive 20 s after the crime", math.abs(wait(a) - 20) < 0.01, wait(a))
+check("2 stars: 14 s", math.abs(wait(b) - 14) < 0.01, wait(b))
+check("3 stars: 8 s", math.abs(wait(c) - 8) < 0.01, wait(c))
+check("4 stars: 4 s", math.abs(wait(d) - 4) < 0.01, wait(d))'
+
+# One wanted runner on foot (top speed 120): how fast the patrol drives at each star level.
+scenario speed_by_stars '
+local function topSpeed(heat)
+	local p = wantedPlayer(heat, heat, Vector3.new(-600 + heat * 500, 3, -1500))
+	local run = line(p.Character.HumanoidRootPart, Vector3.new(0, 0, 60))
+	local fastest = 0
+	sim(45, function(dt)
+		run(dt)
+		for _, m in ipairs(BUILT) do
+			if m.Name == "AIPatrol" and m.Parent ~= nil and m._attrs.AITarget == p.UserId then
+				fastest = math.max(fastest, m.PrimaryPart.AssemblyLinearVelocity.Magnitude)
+			end
+		end
+	end)
+	p:SetAttribute("Heat", 0)
+	sim(2)
+	return fastest
+end
+local one = topSpeed(1)
+check("1 star: the patrol tops out at 80% of the runner (96)", one > 90 and one <= 96.01, one)
+local two = topSpeed(2)
+check("2 stars: 88% (105.6)", two > 100 and two <= 105.61, two)
+local three = topSpeed(3)
+check("3 stars: 95% (114), as before", three > 108 and three <= 114.01, three)'
+
+# 1 star, on land: the first car is sent to the player; seen and then lost, it searches where they were
+# last seen, and no new car comes; seen again, the chase is back on.
+scenario one_star_search '
+BOARD_CREW = true
+local p = wantedPlayer(1, 1, Vector3.new(0, 3, 0))
+local run = circle(p.Character.HumanoidRootPart, Vector3.new(0, 3, 0), 200, 50)
+sim(21, run)
+check("after the head start one car comes", patrols() == 1, patrols())
+local car
+for _, m in ipairs(BUILT) do
+	if m.Name == "AIPatrol" then
+		car = m
+	end
+end
+local nearest = math.huge
+sim(25, function(dt)
+	run(dt)
+	nearest = math.min(nearest, flatDist(car.PrimaryPart.Position, p.Character.HumanoidRootPart.Position))
+end)
+check("before any sighting it is sent to where the player is", nearest < 150, nearest)
+check("its officers are told it is not searching", STEP_SEARCH == false, STEP_SEARCH)
+-- Seen, then lost: LastSeen is where the cops last saw them, far from where they are now.
+p:SetAttribute("HeatSpotted", true)
+sim(1, run)
+local decoy = Vector3.new(-1200, 3, -1200) -- (dry land: not the prison moat)
+p:SetAttribute("LastSeen", decoy)
+p:SetAttribute("HeatSpotted", false)
+BLIND = true -- (round a corner: out of sight of every car)
+local fastest = 0
+sim(40, function(dt)
+	run(dt)
+	fastest = math.max(fastest, car.PrimaryPart.AssemblyLinearVelocity.Magnitude)
+end)
+check("lost: it searches round LastSeen", flatDist(car.PrimaryPart.Position, decoy) < 300,
+	flatDist(car.PrimaryPart.Position, decoy))
+check("not where the player really is", flatDist(car.PrimaryPart.Position, p.Character.HumanoidRootPart.Position) > 800)
+check("at a searching pace (70% of 96)", fastest <= 67.3, fastest)
+check("its officers are told to stay in", STEP_SEARCH == true, STEP_SEARCH)
+check("over 900 studs off for 15 s and more, it still searches (never lost)", car.Parent ~= nil and patrols() == 1)
+check("and no second car was sent", built("SunrayPatrol") == 1, built("SunrayPatrol"))
+car:Destroy()
+sim(10, run)
+check("its car gone while searching: nobody new comes", patrols() == 0 and built("SunrayPatrol") == 1, patrols())
+-- Seen again (a new sighting): the chase is back on, and a new car is sent to them.
+BLIND = false
+p:SetAttribute("HeatSpotted", true)
+sim(30, run)
+local back
+for _, m in ipairs(BUILT) do
+	if m.Name == "AIPatrol" and m.Parent ~= nil then
+		back = m
+	end
+end
+check("seen again: a car is sent", back ~= nil, patrols())
+check("and it comes for them", back ~= nil and flatDist(back.PrimaryPart.Position, p.Character.HumanoidRootPart.Position) < 150,
+	back and flatDist(back.PrimaryPart.Position, p.Character.HumanoidRootPart.Position))
+check("nobody arrested a runner", ARRESTS == 0, ARRESTS)'
+
+# 2 stars searches too; a new crime reported while searching (LastSeen moves) moves the search there.
+scenario two_star_search_moves '
+local p = wantedPlayer(1, 2, Vector3.new(0, 3, 0))
+local run = circle(p.Character.HumanoidRootPart, Vector3.new(0, 3, 0), 200, 50)
+sim(16, run)
+p:SetAttribute("HeatSpotted", true)
+sim(1, run)
+p:SetAttribute("LastSeen", Vector3.new(-1200, 3, -1200))
+p:SetAttribute("HeatSpotted", false)
+BLIND = true
+sim(35, run)
+local car
+for _, m in ipairs(BUILT) do
+	if m.Name == "AIPatrol" and m.Parent ~= nil then
+		car = m
+	end
+end
+check("2 stars: lost, it searches round LastSeen", car ~= nil and flatDist(car.PrimaryPart.Position, Vector3.new(-1200, 3, -1200)) < 300,
+	car and flatDist(car.PrimaryPart.Position, Vector3.new(-1200, 3, -1200)))
+p:SetAttribute("LastSeen", Vector3.new(1000, 3, -1000))
+sim(40, run)
+check("a new report moves the search there", car ~= nil and flatDist(car.PrimaryPart.Position, Vector3.new(1000, 3, -1000)) < 300,
+	car and flatDist(car.PrimaryPart.Position, Vector3.new(1000, 3, -1000)))'
+
+# From 3 stars the patrols always know where the player is (as before Nov 7).
+scenario three_stars_no_search '
+BOARD_CREW = true
+local p = wantedPlayer(1, 3, Vector3.new(0, 3, 0))
+local run = circle(p.Character.HumanoidRootPart, Vector3.new(0, 3, 0), 200, 50)
+sim(20, run)
+p:SetAttribute("HeatSpotted", true)
+sim(1, run)
+p:SetAttribute("LastSeen", Vector3.new(-1200, 3, -1200))
+p:SetAttribute("HeatSpotted", false)
+BLIND = true
+sim(30, run)
+local far = 0
+for _, m in ipairs(BUILT) do
+	if m.Name == "AIPatrol" and m.Parent ~= nil then
+		far = math.max(far, flatDist(m.PrimaryPart.Position, p.Character.HumanoidRootPart.Position))
+	end
+end
+check("3 stars: three cars", patrols() == 3, patrols())
+check("hollow stars at 3: every car still comes for the player", far < 250, far)
+check("officers never told to search", STEP_SEARCH == false, STEP_SEARCH)'
+
+# A 1-star boat at sea: the Coast Guard searches round LastSeen once it has lost them.
+scenario boat_search '
+local p = wantedPlayer(1, 1, Vector3.new(2200, 1, 0))
+local boat = inBoat(p, "Splash", Vector3.new(2200, 1, -400))
+local move = circle(boat.PrimaryPart, Vector3.new(2200, 1, 0), 400, 60)
+sim(30, move)
+check("1 star at sea: a Coast Guard boat", coastGuards() == 1, coastGuards())
+p:SetAttribute("HeatSpotted", true)
+sim(1, move)
+local decoy = Vector3.new(2700, 1, 1800)
+p:SetAttribute("LastSeen", decoy)
+p:SetAttribute("HeatSpotted", false)
+BLIND = true
+sim(40, move)
+local cg = firstCG()
+check("lost at sea: it searches round LastSeen", cg ~= nil and flatDist(cg.PrimaryPart.Position, decoy) < 250,
+	cg and flatDist(cg.PrimaryPart.Position, decoy))
+check("never arrested anyone", ARRESTS == 0, ARRESTS)'

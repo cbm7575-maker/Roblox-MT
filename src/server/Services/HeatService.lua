@@ -4,9 +4,11 @@
 --   HeatSpotted = true while a cop (player or AI "eye") can see you: within 250 studs and a clear
 --     line of sight. Cops then see your exact position (attribute LastSeen follows you). An eye can be
 --     given a longer reach (RegisterEye(part, range)): the police helicopter's (PoliceHeliService).
---   Not seen for 8 s -> hollow stars: cops only see a search circle around LastSeen.
---   Not seen for 30 + 10 x heat seconds -> heat gone ("You lost the cops!").
---   Rookies (Config.Tutorial.Rookie: no bag banked yet, 1-2 stars) go hollow after 5 s and get away after 30.
+--   Not seen for a while -> hollow stars: cops only see a search circle around LastSeen. Not seen for
+--     longer -> heat gone ("You lost the cops!"). How long, by stars, is Config.Wanted (HollowAfter,
+--     EscapeAfter): 5 s / 30 s at 1 star, 6 / 40 at 2, then 8 s and 60, 70, 80 s at 3, 4, 5 (since Nov 7;
+--     it was 8 s and 30 + 10 x heat at every level).
+--   Rookies (Config.Tutorial.Rookie: no bag banked yet, 1-2 stars) get the shorter of those and theirs.
 --   EscapeFrom / EscapeAt (server times, GetServerTimeNow) are set only while the stars are hollow: when
 --     the unseen clock started (the last sighting or crime report) and when it will let you go. The
 --     HUD's LOSING THEM meter fills from one to the other; both clear the moment you're seen again.
@@ -35,6 +37,7 @@ local Workspace = game:GetService("Workspace")
 local Remotes = require(ReplicatedStorage.Shared.Util.Remotes)
 local Disguises = require(ReplicatedStorage.Shared.Config.Disguises)
 local Tutorial = require(ReplicatedStorage.Shared.Config.Tutorial)
+local Wanted = require(ReplicatedStorage.Shared.Config.Wanted)
 local Telemetry = require(ServerScriptService.Services.Telemetry)
 
 local HeatService = {}
@@ -84,11 +87,9 @@ local function noteClues(player)
 end
 
 local SIGHT_RANGE = 250
-local HOLLOW_AFTER = 8
 local HOT_ZONE = 60
 local PING_EVERY = 20
 local CHECK_EVERY = 0.5
-local ESCAPE_BASE, ESCAPE_PER_STAR = 30, 10 -- unseen for 30 + 10 x heat seconds -> heat gone
 -- Chase radar mode (see the header): "On", "Seen", "Off" or "Split". After a week or so of Split data,
 -- set the winner here.
 local RADAR = "On"
@@ -117,17 +118,15 @@ function HeatService.GetHeat(player)
 	return player:GetAttribute("Heat") or 0
 end
 
-local function escapeSeconds(heat)
-	return ESCAPE_BASE + ESCAPE_PER_STAR * heat
-end
-
--- The same for one player: a rookie (Config.Tutorial.Rookie, before their first bag is banked) gets away
--- sooner, and their stars go hollow sooner.
+-- Seconds unseen before the heat goes, and before the stars go hollow (Config.Wanted, by stars). A rookie
+-- (Config.Tutorial.Rookie, before their first bag is banked) gets the shorter of that and theirs.
 local function escapeFor(player, heat)
-	return Tutorial.IsRookie(player) and Tutorial.Rookie.EscapeAfter or escapeSeconds(heat)
+	local after = Wanted.For(heat).EscapeAfter
+	return Tutorial.IsRookie(player) and math.min(after, Tutorial.Rookie.EscapeAfter) or after
 end
-local function hollowFor(player)
-	return Tutorial.IsRookie(player) and Tutorial.Rookie.HollowAfter or HOLLOW_AFTER
+local function hollowFor(player, heat)
+	local after = Wanted.For(heat).HollowAfter
+	return Tutorial.IsRookie(player) and math.min(after, Tutorial.Rookie.HollowAfter) or after
 end
 
 -- The LOSING THEM meter's two ends (see the header); from = nil clears them. os.clock and server time
@@ -333,7 +332,7 @@ local function tick()
 				-- (Heat set straight on the attribute has no sighting yet: its unseen clock starts now.)
 				lastSeenAt[player] = lastSeenAt[player] or clock
 				local since = clock - lastSeenAt[player]
-				if player:GetAttribute("HeatSpotted") and since > hollowFor(player) then
+				if player:GetAttribute("HeatSpotted") and since > hollowFor(player, heat) then
 					player:SetAttribute("HeatSpotted", false)
 				end
 				if since > escapeFor(player, heat) then

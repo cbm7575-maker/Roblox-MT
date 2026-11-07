@@ -8,7 +8,9 @@
 --     suspect is on foot or sitting in a car that has stopped, the officers step out by their doors as
 --     real walking officers (Humanoids in Workspace.NPCs, server-owned). The car waits there with its
 --     lights on (AIPoliceService.drive holds it while Step says "out"). When the suspect drives off or
---     gets K.REMOUNT studs from the car, they run back and get in, and the car takes up the chase.
+--     gets K.REMOUNT studs from the car, they run back and get in, and the car takes up the chase. A car
+--     that is searching (AIPoliceService: 1-2 stars, the suspect seen and then lost) keeps them in, and
+--     calls back any who are out: nobody knows where the suspect is.
 --   * What an officer does depends on what the suspect does (step):
 --       - Hands up (player attribute Surrender: H / gamepad Y / the HANDS UP tile, LawClient ->
 --         RequestSurrender, handled here): they hold fire, walk up and cuff them K.SURRENDER_CUFF seconds
@@ -35,7 +37,8 @@
 --         Model, suspect) shows the wire to everyone and plays the zap and the "ZAPPED!" toast as for a
 --         player cop's taser (LawClient, SoundClient); a miss sends (officer Model, false, where the wire
 --         ended). Never at someone in a seat, in a safe zone, with their hands up or a gun out, or
---         hostile (they get the pistol, below).
+--         hostile (they get the pistol, below), and never at 1 star (Config.Wanted Taser; owner, Nov 7: 1
+--         star should be easy to get away with): there they only cuff someone who stands still.
 --       - Hostile (hostileTo): a gun out at 2+ stars, a gun fired in the last K.FIRED_MEMORY seconds, an
 --         officer shot or punched by them in the last K.ASSAULT_MEMORY seconds, or 4+ stars. They draw
 --         their pistols, keep K.KEEP_NEAR..K.KEEP_FAR studs off with a clear line, and shoot every
@@ -75,6 +78,7 @@ local Workspace = game:GetService("Workspace")
 local Combat = require(ReplicatedStorage.Shared.Config.Combat)
 local Remotes = require(ReplicatedStorage.Shared.Util.Remotes)
 local Tutorial = require(ReplicatedStorage.Shared.Config.Tutorial)
+local Wanted = require(ReplicatedStorage.Shared.Config.Wanted)
 local RateLimit = require(ReplicatedStorage.Shared.Util.RateLimit)
 local HeatService = require(ServerScriptService.Services.HeatService)
 
@@ -675,8 +679,9 @@ local function taserStep(o, p, troot, dist, los, fair, t)
 		end
 		return
 	end
-	-- (Never at a rookie on their first robbery: Config.Tutorial.Rookie.NoTaser.)
-	if fair and los and dist <= K.TASER_RANGE and t >= o.nextTaser and not (Tutorial.Rookie.NoTaser and Tutorial.IsRookie(p)) then
+	-- (Never at a rookie on their first robbery: Config.Tutorial.Rookie.NoTaser. Nor at 1 star: Config.Wanted.)
+	if fair and los and dist <= K.TASER_RANGE and t >= o.nextTaser and not (Tutorial.Rookie.NoTaser and Tutorial.IsRookie(p))
+		and Wanted.For(HeatService.GetHeat(p)).Taser then
 		o.taserAt = t + K.TASER_WINDUP
 		o.nextTaser = t + K.TASER_COOLDOWN
 		taserUp(o, true)
@@ -963,9 +968,10 @@ function PoliceOfficerService.Board(car, count)
 end
 
 -- Every patrol frame (AIPoliceService.drive). p: the suspect; info: AIPoliceService's targetInfo (nil
--- with no live body); carSpeed: the patrol car's speed. Returns "ride" (the car drives), "out" (someone
--- is out: the car waits) or "gone" (every officer of this car is down or dead).
-function PoliceOfficerService.Step(crew, dt, p, info, carSpeed)
+-- with no live body); carSpeed: the patrol car's speed; searching: true while the car searches for a
+-- suspect it lost (nobody gets out, and anyone out goes back). Returns "ride" (the car drives), "out"
+-- (someone is out: the car waits) or "gone" (every officer of this car is down or dead).
+function PoliceOfficerService.Step(crew, dt, p, info, carSpeed, searching)
 	crew.acc += dt
 	if crew.acc < K.TICK then
 		return crew.out and "out" or "ride"
@@ -1003,7 +1009,8 @@ function PoliceOfficerService.Step(crew, dt, p, info, carSpeed)
 			end
 		end
 		-- All aboard: get out once the car has pulled up next to a suspect on foot or in a stopped car.
-		if info and not info.boat and fromCar < K.DISMOUNT and carSpeed < K.DISMOUNT_SPEED and not drivingOff then
+		if info and not info.boat and fromCar < K.DISMOUNT and carSpeed < K.DISMOUNT_SPEED and not drivingOff
+			and not searching then
 			crew.out = true
 			for _, o in ipairs(crew.officers) do
 				if o.state == "Riding" then
@@ -1026,8 +1033,9 @@ function PoliceOfficerService.Step(crew, dt, p, info, carSpeed)
 		return crew.out and "out" or "ride"
 	end
 
-	-- Out: back in when the suspect has driven off or got away from the car.
-	if drivingOff or fromCar > K.REMOUNT or not info then
+	-- Out: back in when the suspect has driven off or got away from the car, or got out of sight long
+	-- enough for the car to start searching.
+	if drivingOff or fromCar > K.REMOUNT or not info or searching then
 		for _, o in ipairs(crew.officers) do
 			if o.state == "Out" then
 				o.state = "Return"

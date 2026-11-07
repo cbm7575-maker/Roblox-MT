@@ -76,6 +76,7 @@ local Workspace = game:GetService("Workspace")
 
 local Remotes = require(ReplicatedStorage.Shared.Util.Remotes)
 local Theme = require(ReplicatedStorage.Shared.Util.Theme)
+local Wanted = require(ReplicatedStorage.Shared.Config.Wanted)
 local GPSClient = require(script.Parent:WaitForChild("GPSClient"))
 local HUDController = require(script.Parent:WaitForChild("HUDController"))
 local NotifyController = require(script.Parent:WaitForChild("NotifyController"))
@@ -87,7 +88,6 @@ local ObjectiveClient = {}
 local C = Theme.Color
 
 local UPDATE_EVERY = 0.25
-local HOLLOW_AFTER = 8 -- HeatService: stars go hollow 8 s after the last sighting
 local HOT_CAR_NEAR = 300 -- a parked hot car of ours this close still counts ("get back in")
 local GPS_SKIP = 60 -- no route to a place you're already standing next to
 local VENT_NAME = "Prison vent"
@@ -325,7 +325,7 @@ local function clock(seconds)
 end
 
 -- Guess when the cops last saw us, for the "stay hidden" countdown when HeatService hasn't published
--- EscapeAt (it drops the heat 30 + 10 x stars seconds after the last sighting).
+-- EscapeAt (it drops the heat Config.Wanted EscapeAfter seconds after the last sighting).
 local function trackSightings()
 	local heat = player:GetAttribute("Heat") or 0
 	if heat <= 0 then
@@ -390,7 +390,7 @@ local function compute()
 		else
 			local escapeAt = player:GetAttribute("EscapeAt") -- HeatService's exact escape time (server time)
 			local exact = typeof(escapeAt) == "number"
-			local left = exact and (escapeAt - t) or (lastSeenAt + 30 + 10 * math.floor(heat) - os.clock())
+			local left = exact and (escapeAt - t) or (lastSeenAt + Wanted.For(heat).EscapeAfter - os.clock())
 			line = { word = "STAY HIDDEN", value = left > 1 and ((exact and "" or "ABOUT ") .. clock(left)) or nil,
 				color = C.Dim }
 		end
@@ -726,10 +726,10 @@ function ObjectiveClient.Init()
 			showMe()
 		end
 	end)
-	-- Stars go hollow 8 s after the last sighting, so that's when they last saw us.
+	-- Stars go hollow HollowAfter s after the last sighting (Config.Wanted), so that's when they last saw us.
 	player:GetAttributeChangedSignal("HeatSpotted"):Connect(function()
 		if player:GetAttribute("HeatSpotted") ~= true then
-			lastSeenAt = os.clock() - HOLLOW_AFTER
+			lastSeenAt = os.clock() - Wanted.For(player:GetAttribute("Heat")).HollowAfter
 		end
 	end)
 	-- Just stole a hot car: say where it goes and route there right away.

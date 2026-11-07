@@ -23,13 +23,15 @@ Tutorial.Steps = {
 -- and it's hard for them"). New players left after ~6 minutes, and the tutorial's "lose the cops" step
 -- is the first hard thing they meet. Until a citizen has banked a first bag (the "bank" step), and while
 -- they're at MaxStars or fewer, the AI police go easy on them:
---   SpeedScale   patrol cars drive at most this share of the rookie's car speed (everyone else: 0.95)
+-- (Everyone else's numbers, by stars, are Config.Wanted; a rookie gets the easier of the two on each line.)
+--   SpeedScale   patrol cars drive at most this share of the rookie's car speed (everyone else: 0.8 at 1
+--                star, 0.88 at 2)
 --   HeadStart    at least this many seconds before the first patrol comes (everyone else: 20 s at 1 star,
 --                14 s at 2). Not longer than 20: the heat is added when the robbery ends and the unseen clock
 --                starts then, so a longer head start than EscapeAfter would mean no police car ever shows up.
 --                A slow car you can outrun is the point, not no chase at all.
---   HollowAfter  seconds unseen before the stars go hollow (everyone else: 8)
---   EscapeAfter  seconds unseen before the heat is gone (everyone else: 30 + 10 x stars, so 40 at 1 star)
+--   HollowAfter  seconds unseen before the stars go hollow (everyone else: 5 at 1 star, 6 at 2)
+--   EscapeAfter  seconds unseen before the heat is gone (everyone else: 30 at 1 star, 40 at 2)
 --   NoTaser      officers on foot don't taser them (they still cuff someone who stands still)
 -- A rookie arrested before banking stays a rookie, so the next try is just as gentle.
 Tutorial.Rookie = { MaxStars = 2, SpeedScale = 0.7, HeadStart = 20, HollowAfter = 5, EscapeAfter = 30, NoTaser = true }

@@ -7,6 +7,7 @@ H="$(cd "$(dirname "$0")" && pwd)"
 L="${LUAU:-luau}" # the Luau CLI (github.com/luau-lang/luau releases); set LUAU to its path
 SRC="${1:-$H/../../src/server/Services/PoliceHeliService.lua}" # another copy of PoliceHeliService.lua, if given
 HEAT="${2:-$H/../../src/server/Services/HeatService.lua}"
+WANTED="${3:-$H/../../src/shared/Config/Wanted.lua}" # the real star table (HeatService's timers)
 OUT="${TMPDIR:-${TEMP:-/tmp}}/theft-logic-tests"
 mkdir -p "$OUT"
 
@@ -448,6 +449,9 @@ newPlayer = function(id)
 	return p
 end
 EOF
+		echo 'game:GetService("ReplicatedStorage").Shared.Config.Wanted = (function()'
+		cat "$WANTED"
+		echo "end)()"
 		echo "local HeatService = (function()"
 		cat "$HEAT"
 		echo "end)()"
@@ -473,7 +477,7 @@ runUntil(clock() + 1)
 check("with a 350 reach: seen", p:GetAttribute("HeatSpotted") == true)
 eye.CFrame = CFrame.new(Vector3.new(0, 0, 360))
 runUntil(clock() + 9)
-check("moved to 360: not seen (hollow after 8 s)", p:GetAttribute("HeatSpotted") == false)
+check("moved to 360: not seen (hollow after 6 s at 2 stars)", p:GetAttribute("HeatSpotted") == false)
 HeatService.UnregisterEye(eye)
 local cop = newPlayer(9)
 cop:SetAttribute("Side", "Cop")
@@ -484,4 +488,51 @@ check("a player cop 240 studs off still sees them (250, as before)", p:GetAttrib
 cop.Character.HumanoidRootPart.Position = Vector3.new(0, 1, 300)
 runUntil(clock() + 9)
 check("and not from 300", p:GetAttribute("HeatSpotted") == false)
+check("no errors", #LOG == 0, LOG[1])'
+
+# HeatService's timers by stars (Config.Wanted, Nov 7): seen, then nobody sees them. When do the stars go
+# hollow, and when are they gone? (A rookie gets the shorter of theirs and the table's.)
+heat_scenario timers_by_stars '
+local Tut = game:GetService("ReplicatedStorage").Shared.Config.Tutorial
+Tut.IsRookie = function(p) return p:GetAttribute("TestRookie") == true end
+local want = { -- stars, rookie, hollow after, gone after
+	{ 1, false, 5, 30 }, { 2, false, 6, 40 }, { 3, false, 8, 60 }, { 4, false, 8, 70 }, { 5, false, 8, 80 },
+	{ 1, true, 5, 30 }, { 2, true, 5, 30 },
+}
+local rows = {}
+for i, w in ipairs(want) do
+	local pos = Vector3.new(i * 5000, 3, 0)
+	local p = wantedPlayer(i, w[1], pos)
+	p:SetAttribute("TestRookie", w[2])
+	local eye = Instance.new("Part")
+	eye.Parent = {}
+	eye.CFrame = CFrame.new(pos + Vector3.new(0, 0, 50))
+	HeatService.RegisterEye(eye)
+	rows[i] = { p = p, eye = eye, w = w }
+end
+runUntil(clock() + 1)
+local seenAll = true
+for _, r in ipairs(rows) do
+	seenAll = seenAll and r.p:GetAttribute("HeatSpotted") == true
+	HeatService.UnregisterEye(r.eye)
+end
+check("all seen to start with", seenAll)
+local lost = clock()
+for _ = 1, 4 * 90 do
+	runUntil(clock() + 0.25)
+	for _, r in ipairs(rows) do
+		if not r.hollowAt and r.p:GetAttribute("HeatSpotted") == false then
+			r.hollowAt = clock() - lost
+		end
+		if not r.goneAt and (r.p:GetAttribute("Heat") or 0) == 0 then
+			r.goneAt = clock() - lost
+		end
+	end
+end
+for _, r in ipairs(rows) do
+	local w = r.w
+	local who = w[1] .. (w[1] == 1 and " star" or " stars") .. (w[2] and " (rookie)" or "")
+	check(who .. ": hollow after " .. w[3] .. " s", r.hollowAt ~= nil and math.abs(r.hollowAt - w[3]) <= 0.75, r.hollowAt)
+	check(who .. ": gone after " .. w[4] .. " s unseen", r.goneAt ~= nil and math.abs(r.goneAt - w[4]) <= 0.75, r.goneAt)
+end
 check("no errors", #LOG == 0, LOG[1])'

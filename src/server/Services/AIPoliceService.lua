@@ -2,20 +2,31 @@
 -- AI patrol cars keep crime exciting when few players are cops.
 --   * Only while fewer than 2 player cops are online and patrolling (a cop away from the keys doesn't
 --     count: ArrestService.IsActiveCop). Per wanted player: 1 car at 1-2 stars (only if there are no
---     such player cops at all), then 3 cars at 3 stars, 4 at 4 and 5 at 5 (CARS_BY_STARS; owner, Nov 4:
+--     such player cops at all), then 3 cars at 3 stars, 4 at 4 and 5 at 5 (Config.Wanted Cars; owner, Nov 4:
 --     "If you have 3 stars, I think there should be more cops trying to get you"; it was 2, 3 and 3).
 --     From 3 stars they come SPAWN_GAP_HOT seconds apart instead of SPAWN_GAP, so they arrive as a pack.
+--     Every per-star number here (cars, officers, head start, speed, searching) is a row of Config.Wanted.
 --     Coast Guard boats keep the old count (heat - 1, max 3). At most MAX_TOTAL in the server.
 --     (The police helicopter that joins at 5 stars is PoliceHeliService's.)
 --   * Head start: no patrol comes until the player has been wanted (WantedSince, set by HeatService)
---     for 20 s at 1 star, 14 s at 2, 8 s at 3, 4 s at 4+ (well inside HeatService's 30 + 10 x heat s
---     escape timer, so patrols get time to search). While waiting, the player attribute
+--     for 20 s at 1 star, 14 s at 2, 8 s at 3, 4 s at 4+ (Config.Wanted HeadStart: well inside the
+--     unseen escape timer, so patrols get time to search). While waiting, the player attribute
 --     PoliceETA (server time) says when they'll come, so the objective banner can count down.
 --   * They spawn on a road 350-600 studs away (600-900 if there's none), out of the target's sight
 --     when possible, follow the RoadGraph toward the target, and switch to direct pursuit once they
 --     are close or can see the target. Where no road is in either ring (e.g. out on Lighthouse Key)
 --     they use the road node nearest 350 studs that is at least 150 away, so no spot is a free escape.
---   * They never go faster than 95% of the target's car, so a good driver can always escape.
+--   * They never go faster than a share of the target's car's top speed (Config.Wanted CarSpeed): 80% at
+--     1 star, 88% at 2, 95% from 3, so a good driver can always escape, and a small crime is easy to shake.
+--   * Searching (Config.Wanted Search: 1-2 stars; owner, Nov 7: "make sure it's easier to get away with
+--     1-star. And probably 2 stars"). The first patrol is sent to where the player really is, as before
+--     (the call to the police said where). But once a cop has seen them in this chase and then lost them
+--     (HeatSpotted false: hollow stars), the patrols no longer know where they are: they drive to LastSeen
+--     and on to road nodes round it (SEARCH_RADIUS), at SEARCH_PACE of their chase speed, don't head
+--     straight for a target they can't see, never count as lost (LOST_RANGE), keep their officers in the
+--     car, and no new car is sent until the player is seen again. Seen again -> the chase is back on. From
+--     3 stars the patrols always know where the player is, as before Nov 7. Coast Guard boats search the
+--     same way (open water round LastSeen).
 --   * Rookies (Config.Tutorial.Rookie: a citizen who hasn't banked a first bag, at 1-2 stars) get patrols
 --     held to 70% of their car's speed (and at least a 20 s head start at 2 stars too), so the tutorial's
 --     first chase is a real chase they can win.
@@ -42,8 +53,8 @@
 --     the AIPolice / AITarget attributes of a patrol car, so sirens, lights, minimap blips, hands up and
 --     Reset Character all treat them as police. They appear in open water CG_SPAWN_DEPTH+ deep with nothing
 --     over it, 350-600 studs off (then 600-900, then 150-350), and steer straight at the target, leading
---     it. Held to 95% of the target's top speed like the cars (their own top speed is CG_TOP, over every
---     boat's, so that rule decides even against the fastest one).
+--     it. Held to the same share of the target's top speed as the cars (their own top speed is CG_TOP, over
+--     every boat's, so that rule decides even against the fastest one).
 --     Arrest: a boat slower than CG_SLOW, or anyone in the water, within CG_ARREST_RANGE (flat) for
 --     ARREST_SECONDS. A boat's driver sees the BEING CUFFED bar (PoliceOfficerService.BoatCuff: "DRIVE to
 --     break free"); a swimmer gets the CoastGuardSwim toast instead (there's no swimming away from a boat).
@@ -67,6 +78,7 @@ local CarPhysics = require(ReplicatedStorage.Shared.Util.CarPhysics)
 local RoadGraph = require(ReplicatedStorage.Shared.Util.RoadGraph)
 local Remotes = require(ReplicatedStorage.Shared.Util.Remotes)
 local Tutorial = require(ReplicatedStorage.Shared.Config.Tutorial)
+local Wanted = require(ReplicatedStorage.Shared.Config.Wanted)
 local CarBuilder = require(ServerStorage.Tools.CarBuilder)
 local HeatService = require(ServerScriptService.Services.HeatService)
 local Officers = require(ServerScriptService.Services.PoliceOfficerService)
@@ -74,12 +86,11 @@ local Officers = require(ServerScriptService.Services.PoliceOfficerService)
 local AIPoliceService = {}
 
 local MAX_TOTAL = 8 -- (was 6: two players at 4 stars now bring 4 cars each)
-local CARS_BY_STARS = { 1, 1, 3, 4, 5 } -- patrol cars per wanted player (1-2 stars: only with no player cop)
+-- (Patrol cars per wanted player, officers per car, head start and top speed by stars: Config.Wanted.)
 local BOATS_MAX = 3 -- Coast Guard boats per wanted player: heat - 1, at most this many
 local SPAWN_MIN, SPAWN_MAX = 350, 600 -- preferred spawn distance from the target
 local SPAWN_FAR = 900 -- fallback ring when no road is in the preferred band
 local SPAWN_LAST = 150 -- last resort when neither ring has a road: never spawn closer than this
-local GRACE = { 20, 14, 8, 4, 4 } -- head start in seconds, by stars (owner: "more time to think" after an ATM)
 local LOS_TRIES = 10 -- raycasts spent looking for a spawn the target can't see
 local DIRECT_RANGE = 140
 local ARREST_RANGE = 22
@@ -90,6 +101,12 @@ local LOST_SECONDS = 15
 local SPAWN_GAP = 6 -- seconds between spawns for the same target
 local SPAWN_GAP_HOT = 3 -- the same from 3 stars, so the bigger pack arrives together
 local GONE_WAIT = 15 -- seconds a car whose officers are all down waits before it goes
+-- Searching (see the header)
+local SEARCH_RADIUS = 220 -- studs round LastSeen: the road nodes a searching patrol drives to
+local SEARCH_REACHED = 30 -- studs from a search point: on to the next one
+local SEARCH_PACE = 0.7 -- share of its chase speed while searching (looking, not chasing)
+local CG_SEARCH_RADIUS = 150 -- studs round LastSeen a searching Coast Guard boat looks in
+local CG_SEARCH_REACHED = 40
 
 -- Coast Guard (see the header)
 local CG_VEHICLE = "HarborPatrol" -- the police boat player cops drive
@@ -114,6 +131,7 @@ local lastSpawnFor = {} -- [player] = os.clock()
 local wantedAt = {} -- [player] = server time we first saw them wanted (only used if WantedSince is missing)
 local atSeaNow = {} -- [player] = true while out on the water (manage: once a second)
 local cgToldFor = {} -- [player] = the WantedSince of the chase they heard "Coast Guard on the way" in
+local seenIn = {} -- [player] = the WantedSince of the chase in which a cop has seen them (searching)
 local rng = Random.new()
 local notify
 
@@ -169,11 +187,73 @@ local function desiredFor(p, cops, sea)
 	if cops >= 2 then
 		return 0
 	end
-	local heat = math.clamp(math.floor(p:GetAttribute("Heat") or 0), 0, #CARS_BY_STARS)
+	local heat = math.clamp(math.floor(p:GetAttribute("Heat") or 0), 0, #Wanted.Stars)
 	if heat >= 3 then
-		return sea and math.min(BOATS_MAX, heat - 1) or CARS_BY_STARS[heat]
+		return sea and math.min(BOATS_MAX, heat - 1) or Wanted.For(heat).Cars
 	end
-	return cops == 0 and 1 or 0
+	return cops == 0 and Wanted.For(heat).Cars or 0
+end
+
+-- Which chase this is (WantedSince, set by HeatService when the heat goes from 0 to more).
+local function chaseOf(p)
+	return p:GetAttribute("WantedSince") or wantedAt[p] or 0
+end
+
+-- True while the patrols search for this player instead of driving to them (see the header): at a star
+-- level that searches, seen in this chase and then lost again. Notes a sighting as it goes.
+local function searching(p)
+	if p:GetAttribute("HeatSpotted") == true then
+		seenIn[p] = chaseOf(p)
+		return false
+	end
+	return seenIn[p] ~= nil and seenIn[p] == chaseOf(p) and Wanted.For(p:GetAttribute("Heat")).Search == true
+		and typeof(p:GetAttribute("LastSeen")) == "Vector3"
+end
+
+-- The share of the target's top speed a patrol may drive at (Config.Wanted CarSpeed, or a rookie's
+-- Config.Tutorial.Rookie.SpeedScale if that's lower), less while searching.
+local function speedShare(p, search)
+	local share = Wanted.For(p:GetAttribute("Heat")).CarSpeed
+	if Tutorial.IsRookie(p) then
+		share = math.min(share, Tutorial.Rookie.SpeedScale)
+	end
+	return search and share * SEARCH_PACE or share
+end
+
+-- The next place a searching patrol drives to: a road node within SEARCH_RADIUS of where the target was
+-- last seen, not the one it's at (LastSeen itself when there's none).
+local function pickSearchPoint(center, from)
+	local c = Vector3.new(center.X, 0, center.Z)
+	local here = Vector3.new(from.X, 0, from.Z)
+	local choices = {}
+	for _, n in ipairs(RoadGraph.Nodes) do
+		if (n - c).Magnitude <= SEARCH_RADIUS and (n - here).Magnitude > SEARCH_REACHED * 2 then
+			table.insert(choices, n)
+		end
+	end
+	return #choices > 0 and choices[rng:NextInteger(1, #choices)] or c
+end
+
+-- Where a searching unit heads now (u.searchPoint): LastSeen first, then a new point (pick) each time it
+-- gets there, and LastSeen again when that moves (a new crime was reported). nil when not searching (and
+-- a search that just ended is cleared, so the chase gets a fresh path).
+local function searchGoal(u, p, pos, search, reached, pick)
+	if not search then
+		if u.searchFrom then
+			u.searchFrom, u.searchPoint, u.path = nil, nil, nil
+		end
+		return nil
+	end
+	local last = p:GetAttribute("LastSeen")
+	if u.searchFrom ~= last then
+		u.searchFrom = last
+		u.searchPoint = Vector3.new(last.X, 0, last.Z)
+		u.path = nil
+	elseif (Vector3.new(pos.X, 0, pos.Z) - u.searchPoint).Magnitude < reached then
+		u.searchPoint = pick(last, pos)
+		u.path = nil
+	end
+	return u.searchPoint
 end
 
 -- Units after this player: every one, or only Coast Guard boats (boat = true) or only cars (false).
@@ -257,6 +337,22 @@ local function pickWaterSpawn(info)
 	return nil
 end
 
+-- The next spot a searching Coast Guard boat heads to: deep, open water within CG_SEARCH_RADIUS of where
+-- the target was last seen (LastSeen itself when none turns up).
+local function pickWaterSearch(center, from)
+	for _ = 1, 8 do
+		local a = rng:NextNumber(0, math.pi * 2)
+		local r = rng:NextNumber(CG_SEARCH_REACHED * 1.5, CG_SEARCH_RADIUS)
+		local x, z = center.X + math.cos(a) * r, center.Z + math.sin(a) * r
+		local y = waterTop(x, CG_SKY, z, CG_SKY + 40)
+		if y and depthAt(x, y, z) >= CG_SPAWN_DEPTH
+			and (Vector3.new(x, 0, z) - Vector3.new(from.X, 0, from.Z)).Magnitude > CG_SEARCH_REACHED then
+			return Vector3.new(x, 0, z)
+		end
+	end
+	return Vector3.new(center.X, 0, center.Z)
+end
+
 local function despawn(u)
 	for i, x in ipairs(units) do
 		if x == u then
@@ -285,11 +381,11 @@ local function arrivalTime(p)
 		wantedAt[p] = wantedAt[p] or serverNow()
 		since = wantedAt[p]
 	end
-	local stars = math.clamp(math.floor(p:GetAttribute("Heat") or 1), 1, #GRACE)
+	local grace = Wanted.For(p:GetAttribute("Heat")).HeadStart
 	if Tutorial.IsRookie(p) then -- first robbery: a longer head start (Config.Tutorial.Rookie)
-		return since + math.max(GRACE[stars], Tutorial.Rookie.HeadStart)
+		return since + math.max(grace, Tutorial.Rookie.HeadStart)
 	end
-	return since + GRACE[stars]
+	return since + grace
 end
 
 local function setETA(p, value)
@@ -371,7 +467,7 @@ local function spawnFor(p, info)
 	}
 	table.insert(units, u)
 	lastSpawnFor[p] = os.clock()
-	local ok, crew = pcall(Officers.Board, car, (p:GetAttribute("Heat") or 0) >= 3 and 2 or 1)
+	local ok, crew = pcall(Officers.Board, car, Wanted.For(p:GetAttribute("Heat")).Officers)
 	u.crew = ok and crew or nil
 end
 
@@ -415,7 +511,7 @@ local function spawnBoatFor(p, info)
 	}
 	table.insert(units, u)
 	-- Officers ride along (they stay aboard: driveBoat never lets them out).
-	local ok, crew = pcall(Officers.Board, car, (p:GetAttribute("Heat") or 0) >= 3 and 2 or 1)
+	local ok, crew = pcall(Officers.Board, car, Wanted.For(p:GetAttribute("Heat")).Officers)
 	u.crew = ok and crew or nil
 	-- Once a chase: the Coast Guard is coming.
 	local since = p:GetAttribute("WantedSince") or wantedAt[p] or 0
@@ -458,9 +554,10 @@ local function drive(u, dt, now)
 	local cf = chassis.CFrame
 	local toTarget = info.pos - pos
 	local dist = Vector3.new(toTarget.X, 0, toTarget.Z).Magnitude
+	local search = searching(p)
 
-	-- Gone missing?
-	if dist > LOST_RANGE then
+	-- Gone missing? (Not while searching: it's looking where they were last seen.)
+	if dist > LOST_RANGE and not search then
 		u.lostFor += dt
 		if u.lostFor > LOST_SECONDS then
 			return despawn(u)
@@ -474,7 +571,7 @@ local function drive(u, dt, now)
 
 	-- Officers out on foot: the car waits (brakes on, lights on) until they're back in.
 	if u.crew then
-		local mode = Officers.Step(u.crew, dt, p, info, chassis.AssemblyLinearVelocity.Magnitude)
+		local mode = Officers.Step(u.crew, dt, p, info, chassis.AssemblyLinearVelocity.Magnitude, search)
 		if mode == "gone" then
 			u.goneAt = u.goneAt or now
 			if now - u.goneAt > GONE_WAIT then
@@ -488,15 +585,18 @@ local function drive(u, dt, now)
 		end
 	end
 
-	-- Where to aim: straight at the target when close or in sight, otherwise along the roads.
+	-- Where to aim: straight at the target when close or in sight, otherwise along the roads. Searching:
+	-- along the roads to the search point, and straight at the target only once it's in sight.
 	losParams.FilterDescendantsInstances = { car, p.Character, Workspace.Vehicles }
 	local canSee = dist < 250 and Workspace:Raycast(pos + Vector3.new(0, 2, 0), toTarget, losParams) == nil
+	local goal = searchGoal(u, p, pos, search, SEARCH_REACHED, pickSearchPoint) or info.pos
+	local hunting = canSee or not search
 	local aim
-	if dist < DIRECT_RANGE or canSee then
+	if canSee or (dist < DIRECT_RANGE and not search) then
 		aim = info.pos + info.vel * math.clamp(dist / 150, 0, 0.8) -- lead a moving target
 	else
 		if now > u.repathAt or not u.path then
-			u.path = RoadGraph.Path(pos, info.pos)
+			u.path = RoadGraph.Path(pos, goal)
 			u.pathIndex = 2
 			u.repathAt = now + 2
 		end
@@ -505,9 +605,9 @@ local function drive(u, dt, now)
 			while path[u.pathIndex] and (Vector3.new(pos.X, 0, pos.Z) - path[u.pathIndex]).Magnitude < 25 do
 				u.pathIndex += 1
 			end
-			aim = path[u.pathIndex] or info.pos
+			aim = path[u.pathIndex] or goal
 		else
-			aim = info.pos
+			aim = goal
 		end
 	end
 	local dir = Vector3.new(aim.X - pos.X, 0, aim.Z - pos.Z)
@@ -526,12 +626,13 @@ local function drive(u, dt, now)
 	if math.abs(angle) > 2.4 and speed < 20 then
 		throttle, steer = -0.8, -steer -- target behind us: back up while turning
 	end
-	-- Close in smoothly: the nearer the target, the slower we want to be (no overshooting).
+	-- Close in smoothly: the nearer the target, the slower we want to be (no overshooting). (A searching
+	-- car that can't see them doesn't know they're there.)
 	local desired = math.max(12, dist * 1.3 + info.vel.Magnitude)
-	if dist < 90 and speed > desired then
+	if hunting and dist < 90 and speed > desired then
 		throttle = -0.6
 	end
-	if dist < 18 then
+	if hunting and dist < 18 then
 		throttle = speed > 4 and -1 or 0 -- park a car length away; never shove the target around
 	end
 
@@ -544,6 +645,11 @@ local function drive(u, dt, now)
 			u.stuckFor = 0
 			u.reverseUntil = now + 1.3
 			u.reverseSteer = angle > 0 and -1 or 1
+			if search and u.searchFrom then
+				-- (Searching and blocked, e.g. LastSeen is inside a building: look somewhere else.)
+				u.searchPoint = pickSearchPoint(u.searchFrom, pos)
+				u.path = nil
+			end
 		end
 	else
 		u.stuckFor = 0
@@ -562,9 +668,9 @@ local function drive(u, dt, now)
 		u.upsideFor = 0
 	end
 
-	-- Never faster than 95% of the target's car (a rookie's: Config.Tutorial.Rookie.SpeedScale).
-	local share = Tutorial.IsRookie(p) and Tutorial.Rookie.SpeedScale or 0.95
-	local scale = math.min(1, (info.maxSpeed * share) / (car:GetAttribute("MaxSpeed") or 135))
+	-- Never faster than a share of the target's car (Config.Wanted CarSpeed; a rookie's:
+	-- Config.Tutorial.Rookie.SpeedScale), slower while searching.
+	local scale = math.min(1, (info.maxSpeed * speedShare(p, not hunting)) / (car:GetAttribute("MaxSpeed") or 135))
 	CarPhysics.Step(u.phys, dt, { Throttle = throttle, Steer = steer, SpeedScale = scale })
 
 	-- Arrest a target who stays (nearly) stopped right next to us. Brief wiggles don't reset the
@@ -611,7 +717,8 @@ local function driveBoat(u, dt, now)
 	end
 	local toTarget = info.pos - pos
 	local dist = Vector3.new(toTarget.X, 0, toTarget.Z).Magnitude
-	if dist > LOST_RANGE then
+	local search = searching(p)
+	if dist > LOST_RANGE and not search then -- (not while searching: as for the cars)
 		u.lostFor += dt
 		if u.lostFor > LOST_SECONDS then
 			return despawn(u)
@@ -634,8 +741,15 @@ local function driveBoat(u, dt, now)
 	end
 	u.ashoreFor = 0
 
-	-- Straight at the target, leading it.
-	local aim = info.pos + info.vel * math.clamp(dist / 150, 0, 0.8)
+	-- Straight at the target, leading it. Searching (see the header): round where they were last seen,
+	-- unless they're in sight (HeatService sees them too then, and the search ends).
+	losParams.FilterDescendantsInstances = { car, p.Character, Workspace.Vehicles }
+	local canSee = dist < 250 and Workspace:Raycast(pos + Vector3.new(0, 2, 0), toTarget, losParams) == nil
+	local hunting = canSee or not search
+	local aim = searchGoal(u, p, pos, search, CG_SEARCH_REACHED, pickWaterSearch)
+	if hunting or not aim then
+		aim = info.pos + info.vel * math.clamp(dist / 150, 0, 0.8)
+	end
 	local dir = Vector3.new(aim.X - pos.X, 0, aim.Z - pos.Z)
 	local look = Vector3.new(cf.LookVector.X, 0, cf.LookVector.Z)
 	local right = Vector3.new(cf.RightVector.X, 0, cf.RightVector.Z)
@@ -652,10 +766,10 @@ local function driveBoat(u, dt, now)
 		throttle, steer = -0.8, -steer -- target behind: back round
 	end
 	local desired = math.max(12, dist * 1.3 + info.vel.Magnitude)
-	if dist < CG_EASE and speed > desired then
+	if hunting and dist < CG_EASE and speed > desired then
 		throttle = -0.6
 	end
-	if dist < CG_PARK then
+	if hunting and dist < CG_PARK then
 		throttle = speed > 4 and -1 or 0 -- alongside: hold here, never ram them
 	end
 
@@ -698,8 +812,8 @@ local function driveBoat(u, dt, now)
 		u.upsideFor = 0
 	end
 
-	-- Never faster than 95% of the target's boat (a swimmer counts as 120).
-	local scale = math.min(1, (info.maxSpeed * 0.95) / (car:GetAttribute("MaxSpeed") or CG_TOP))
+	-- Never faster than the cars' share of the target's boat (a swimmer counts as 120), slower searching.
+	local scale = math.min(1, (info.maxSpeed * speedShare(p, not hunting)) / (car:GetAttribute("MaxSpeed") or CG_TOP))
 	CarPhysics.Step(u.phys, dt, { Throttle = throttle, Steer = steer, SpeedScale = scale })
 
 	-- Arrest: a boat that stays (nearly) stopped alongside, or anyone in the water this close.
@@ -743,7 +857,9 @@ local function manage()
 			local arriveAt = arrivalTime(p)
 			local waiting = t < arriveAt
 			setETA(p, (waiting and want > 0 and unitsFor(p) == 0) and arriveAt or nil)
-			if info and have < want and not waiting and #units < MAX_TOTAL and os.clock() - (lastSpawnFor[p] or 0) > gap then
+			-- (Searching: nobody knows where they are, so nobody new is sent there. See the header.)
+			if info and have < want and not waiting and not searching(p) and #units < MAX_TOTAL
+				and os.clock() - (lastSpawnFor[p] or 0) > gap then
 				if sea then
 					spawnBoatFor(p, info)
 				else
@@ -760,6 +876,7 @@ local function manage()
 		else
 			wantedAt[p] = nil
 			atSeaNow[p] = nil
+			seenIn[p] = nil
 			setETA(p, nil)
 		end
 	end
@@ -800,6 +917,7 @@ function AIPoliceService.Init()
 		wantedAt[p] = nil
 		atSeaNow[p] = nil
 		cgToldFor[p] = nil
+		seenIn[p] = nil
 	end)
 end
 
