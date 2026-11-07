@@ -573,3 +573,90 @@ fire(a2, "RequestCrew", "Prep", nil)
 runUntil(clock() + 0.1)
 check("the next prep is the first one not done", decode(a2:GetAttribute("Mission")).id == "PrepGear")
 '
+
+# Crew calls (PHONE > CREW > INVITE EVERYONE HERE): who gets the card, who joins, when it closes.
+scenario crew_call '
+local a, b, c, d, x = newMate(1), newMate(2), newMate(3), newMate(4), newMate(5)
+local cop, e, f = newMate(6), newMate(7), newMate(8)
+cop:SetAttribute("Side", "Cop")
+for _, p in ipairs({ a, b, c, d, x, cop, e, f }) do join(p) end
+runUntil(1)
+crewOf2(e, f)
+fire(a, "RequestCrew", "Call")
+runUntil(clock() + 0.1)
+check("caller told it went out", lastSent(a, "Notify")[1] == "CrewCallSent")
+check("caller marked as calling", type(a:GetAttribute("CrewCallUntil")) == "number")
+local cb, ccop, ce = lastSent(b, "CrewCall"), lastSent(cop, "CrewCall"), lastSent(e, "CrewCall")
+check("a free citizen gets the card", cb and cb[1].Eligible == true and cb[1].FromUserId == 1 and cb[1].FromName == "P1")
+check("a cop gets only the chat line", ccop and ccop[1].Eligible == false)
+check("someone in a crew gets only the chat line", ce and ce[1].Eligible == false)
+check("not sent to the caller", #sent(a, "CrewCall") == 0)
+fire(b, "RequestCrew", "CallJoin", 1)
+runUntil(clock() + 1)
+local id = a:GetAttribute("Crew")
+check("first answer makes a crew of the two", id ~= nil and b:GetAttribute("Crew") == id)
+check("both handed the crew job", #sent(a, "CrewJob", "New") == 1 and #sent(b, "CrewJob", "New") == 1)
+local cj = lastSent(a, "CrewJob", "CallJoined")
+check("caller hears who answered", cj and cj[2].Name == "P2")
+check("still open with room left", type(a:GetAttribute("CrewCallUntil")) == "number")
+fire(c, "RequestCrew", "CallJoin", 1)
+fire(d, "RequestCrew", "CallJoin", 1)
+runUntil(clock() + 1)
+check("third and fourth join the same crew", c:GetAttribute("Crew") == id and d:GetAttribute("Crew") == id)
+check("saved as a crew of four", #STORE.data["c_" .. id].members == 4)
+local closed = false
+for _, ev in ipairs(EVENTS) do
+	if ev.name == "CrewCallClosed" and ev.all and ev.args[1].FromUserId == 1 then closed = true end
+end
+check("a full crew closes the call for everyone", closed and a:GetAttribute("CrewCallUntil") == nil)
+fire(x, "RequestCrew", "CallJoin", 1)
+runUntil(clock() + 0.5)
+check("a fifth answer is too late", lastSent(x, "Notify")[1] == "CrewCallGone" and x:GetAttribute("Crew") == nil)
+'
+
+scenario crew_call_rules '
+local a, b, cop = newMate(1), newMate(2), newMate(3)
+cop:SetAttribute("Side", "Cop")
+for _, p in ipairs({ a, b, cop }) do join(p) end
+runUntil(1)
+fire(cop, "RequestCrew", "Call")
+runUntil(clock() + 0.1)
+check("cops cannot call", lastSent(cop, "Notify")[1] == "CrewCallCivOnly" and #sent(a, "CrewCall") == 0)
+fire(a, "RequestCrew", "Call")
+runUntil(clock() + 0.1)
+check("call sent", lastSent(a, "Notify")[1] == "CrewCallSent")
+fire(a, "RequestCrew", "Call")
+runUntil(clock() + 0.1)
+check("one open call at a time", lastSent(a, "Notify")[1] == "CrewCallOpen")
+runUntil(clock() + 61)
+check("the call runs out after a minute", a:GetAttribute("CrewCallUntil") == nil)
+fire(b, "RequestCrew", "CallJoin", 1)
+runUntil(clock() + 0.5)
+check("answering a call that ran out", lastSent(b, "Notify")[1] == "CrewCallGone" and b:GetAttribute("Crew") == nil)
+fire(a, "RequestCrew", "Call")
+runUntil(clock() + 0.1)
+check("90 s between calls", lastSent(a, "Notify")[1] == "CrewCallWait")
+runUntil(clock() + 30)
+fire(a, "RequestCrew", "Call")
+runUntil(clock() + 0.1)
+check("a new call after the wait", lastSent(a, "Notify")[1] == "CrewCallSent")
+leave(a)
+runUntil(clock() + 0.5)
+local closed = false
+for _, ev in ipairs(EVENTS) do
+	if ev.name == "CrewCallClosed" and ev.all and ev.args[1].FromUserId == 1 then closed = true end
+end
+check("leaving the server closes the call", closed)
+crewOf2(b, newMate(9))
+'
+
+scenario crew_call_nobody '
+local a, b, c = newMate(1), newMate(2), newMate(3)
+for _, p in ipairs({ a, b, c }) do join(p) end
+runUntil(1)
+crewOf2(b, c)
+fire(a, "RequestCrew", "Call")
+runUntil(clock() + 0.1)
+check("nobody free: refused, nothing sent", lastSent(a, "Notify")[1] == "CrewCallNobody" and #sent(b, "CrewCall") == 0)
+check("no open call left behind", a:GetAttribute("CrewCallUntil") == nil)
+'

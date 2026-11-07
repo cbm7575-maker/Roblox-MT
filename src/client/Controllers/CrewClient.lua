@@ -45,11 +45,18 @@
 --       free roam, past the tutorial, not busy, with another free-roam player in the server.
 --     - It goes after TIP_FOR seconds, when you join a crew, or when an invite arrives (the invite takes
 --       the spot).
+--   * Crew calls (CrewService: PHONE > CREW > INVITE EVERYONE HERE). Remote CrewCall: a chat line for everyone,
+--     "[CREW CALL] <name> wants to start a heist!", and for a free-roam player with no crew (Eligible) a card in
+--     the invite card's spot (Kind = "Call", attribute From = the caller's UserId): CREW CALL, "<name> wants to
+--     start a heist!", I'M IN (RequestCrew "CallJoin", their UserId) and NO THANKS. It never replaces a crew
+--     invite that's waiting. CrewCallClosed { FromUserId } takes that caller's card away (their crew is full, the
+--     call ran out or they left). The caller hears who answered (CrewJob "CallJoined" { Name }).
 --   CrewClient.Crewmates() -> the other players in your crew
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
+local TextChatService = game:GetService("TextChatService")
 local UserInputService = game:GetService("UserInputService")
 
 local Remotes = require(ReplicatedStorage.Shared.Util.Remotes)
@@ -73,6 +80,7 @@ local CARD_W_TOUCH, MIN_W_TOUCH = 380, 330 -- phones: one row (it narrows to MIN
 local CARD_KINDS = {
 	Invite = { yes = 64, no = 92, lines = 2 }, -- JOIN, NO THANKS
 	Tip = { yes = 104, no = 72, lines = 3 }, -- FIND A CREW, LATER
+	Call = { yes = 72, no = 92, lines = 2 }, -- I'M IN, NO THANKS
 }
 local TIP_FOR = 20 -- seconds before the crew tip goes
 local TIP_CHECK_EVERY = 1 -- seconds between checks for whether the crew tip is due
@@ -386,6 +394,58 @@ local function showInvite(info)
 			Remotes.Event("RequestCrew"):FireServer("Decline")
 		end,
 	})
+end
+
+------------------------------------------------------------------ crew calls (see the header)
+
+-- A line in Roblox's chat window, from the game (rich text; names escaped).
+local function escapeRich(text)
+	return (tostring(text):gsub("&", "&amp;"):gsub("<", "&lt;"):gsub(">", "&gt;"))
+end
+local function chatLine(text)
+	pcall(function()
+		local channels = TextChatService:FindFirstChild("TextChannels")
+		local general = channels and channels:FindFirstChild("RBXGeneral")
+		if general then
+			general:DisplaySystemMessage(text)
+		end
+	end)
+end
+
+local function showCall(info)
+	if type(info) ~= "table" or type(info.FromUserId) ~= "number" then
+		return
+	end
+	local name = tostring(info.FromName or "Someone")
+	local size = tonumber(info.Size) or 1
+	local whose = size > 1 and (name .. "'s crew (" .. size .. "/4)") or name
+	chatLine('<font color="#F0C850"><b>[CREW CALL]</b></font> ' .. escapeRich(whose) .. " wants to start a heist!"
+		.. (info.Eligible and " Tap I'M IN to join their crew." or ""))
+	if not info.Eligible or (card and cardKind == "Invite") then
+		return -- (a crew invite that's waiting keeps its card)
+	end
+	openCard({
+		kind = "Call", tag = "CREW CALL", tagColor = C.Gold,
+		words = {
+			pc = whose .. " wants to start a heist! Join their crew: " .. JOB_NAME .. " pays " .. HUDController.Money(PLAN.CUT) .. "+ each.",
+			touch = whose .. " wants to start a heist: join their crew!",
+		},
+		yes = "I'M IN", no = "NO THANKS", seconds = math.clamp(tonumber(info.Seconds) or 60, 5, 120),
+		onYes = function()
+			Remotes.Event("RequestCrew"):FireServer("CallJoin", info.FromUserId)
+		end,
+		onNo = function() end,
+	})
+	if card then
+		card:SetAttribute("From", info.FromUserId)
+	end
+end
+
+local function closeCallCard(info)
+	if card and cardKind == "Call" and type(info) == "table" and card:GetAttribute("From") == info.FromUserId then
+		card:Destroy()
+		card = nil
+	end
 end
 
 ------------------------------------------------------------------ the heist plan
@@ -821,6 +881,8 @@ local function onJob(kind, info)
 			.. "your crew broke up, and its Big Score job with it.", nil, "warning")
 	elseif kind == "Left" then
 		NotifyController.Show(tostring(info.Name or "Someone") .. " left your crew.", nil, "crew")
+	elseif kind == "CallJoined" then
+		NotifyController.Show(tostring(info.Name or "Someone") .. " answered your crew call and joined your crew!", C.Gold, "crew")
 	elseif kind == "Paused" then
 		local me = info.Name == player.DisplayName
 		NotifyController.Show((me and "Heist paused." or (tostring(info.Name) .. " paused the heist."))
@@ -869,6 +931,8 @@ function CrewClient.Init()
 	task.spawn(function()
 		Remotes.OnClient("CrewInvite", showInvite)
 	end)
+	Remotes.OnClient("CrewCall", showCall)
+	Remotes.OnClient("CrewCallClosed", closeCallCard)
 	Remotes.OnClient("CrewJob", onJob)
 	player:GetAttributeChangedSignal("FriendBonus"):Connect(function()
 		if player:GetAttribute("FriendBonus") then

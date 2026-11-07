@@ -19,6 +19,20 @@
 --     every device can show the Ride bubble and the RIDE button to exactly those players.
 --   * CrewService.Invite(from, target) sends the same invite card as the phone's INVITE button
 --     (FriendsService uses it when a friend arrives through a Roblox invite).
+--   * Crew call (owner, Nov 7 2026: "another button that says invite people from server... it'll pop up in the
+--     chat, someone wants to start a crew, start a heist. And anyone can click on I want to start a heist with
+--     you"). PHONE > CREW > INVITE EVERYONE HERE ("Call"): every other player in the server gets a chat line,
+--     "[CREW CALL] <name> wants to start a heist!", and every free-roam player with no crew also gets a card
+--     with I'M IN (CrewClient). The first to tap I'M IN ("CallJoin", the caller's UserId) join the caller's
+--     crew (a new one if the caller has none, with its CREW UP! job), up to MAX_CREW; the call ends when the crew
+--     is full, after CALL_SECONDS, or when the caller leaves or stops being a citizen. One open call per player
+--     and CALL_GAP seconds between calls. Only for citizens (the crew heist is theirs).
+--     Caller attribute "CrewCallUntil" (server time) while their call is open: the phone's PLAYERS HERE shows
+--     I'M IN by their name. Remotes CrewCall (server -> every other player) { FromUserId, FromName, Eligible,
+--     Seconds, Size } and CrewCallClosed (to all) { FromUserId }; the caller gets CrewJob "CallJoined" { Name }
+--     for each player who answers. Refusals are Notify keys: CrewCallCivOnly, CrewCallOpen, CrewCallWait,
+--     CrewCallNobody (nobody free to join), CrewCallGone (to someone who answered too late), CrewFull.
+--     Telemetry: CrewCall (value = players who got the card), CrewCallJoined (value = the crew's size).
 -- The crew job (Config.Missions.CrewJob): every crew has one, The Big Score. Its crew preps
 -- (Missions.CrewPreps: driving chores the crew does together, run by MissionService.StartCrew) must all be
 -- done before BigScoreService lets the crew start the heist (CrewService.HeistUnlocked); a passed Big
@@ -70,6 +84,8 @@ local CrewService = {}
 
 local MAX_CREW = 4
 local INVITE_SECONDS = 60
+local CALL_SECONDS = 60 -- a crew call stays open this long
+local CALL_GAP = 90 -- seconds between two crew calls from the same player
 local BONUS_RANGE = 150
 local SWEEP = 300 -- seconds between asks about the pairs not known to be friends
 local SWEEP_GAP = 0.2 -- seconds between two of those asks (spreads the web calls out)
@@ -82,9 +98,11 @@ local JOB = Missions.CrewJob
 -- [crewId] = { members = { players in this server }, rec = the saved record (see the header), running = prepId }
 local crews = {}
 local invites = {} -- [targetPlayer] = { from = player, crewId = id or nil, at = os.clock() }
+local calls = {} -- [caller] = os.clock() when their open crew call ends
+local lastCall = {} -- [caller] = os.clock() of their last crew call (CALL_GAP)
 local friendsOf = {} -- [player] = { [userId] = true } for each Roblox friend in this server
 local nextId = 0
-local notify, inviteEvent, crewJob
+local notify, inviteEvent, crewJob, callEvent, callClosed
 
 local Store = {
 	ds = nil, -- the DataStore, or nil in memory mode
@@ -869,6 +887,116 @@ function CrewService.CanCrewUp(owner, rider)
 	return not (pending and os.clock() - pending.at < INVITE_SECONDS)
 end
 
+------------------------------------------------------------------ crew calls (see the header)
+
+local function callOpen(caller)
+	local ends = calls[caller]
+	return ends ~= nil and os.clock() < ends and caller.Parent == Players
+end
+
+local function closeCall(caller)
+	if calls[caller] then
+		calls[caller] = nil
+		if caller.Parent == Players then
+			caller:SetAttribute("CrewCallUntil", nil)
+		end
+		callEvent = callEvent or Remotes.Event("CrewCall")
+		callClosed = callClosed or Remotes.Event("CrewCallClosed")
+		callClosed:FireAllClients({ FromUserId = caller.UserId })
+	end
+end
+
+-- Who a crew call's card goes to: other citizens with no crew.
+local function callable(p, caller)
+	return p ~= caller and p:GetAttribute("Side") == "Civilian" and p:GetAttribute("Crew") == nil
+end
+
+-- Send `player`'s crew call to the server. Returns true when it went out, else false and the Notify key that says why.
+function CrewService.Call(player)
+	if player:GetAttribute("Side") ~= "Civilian" then
+		return false, "CrewCallCivOnly"
+	end
+	local crew = CrewService.CrewOf(player)
+	if crew and #crew.rec.members >= MAX_CREW then
+		return false, "CrewFull"
+	end
+	if callOpen(player) then
+		return false, "CrewCallOpen"
+	end
+	if lastCall[player] and os.clock() - lastCall[player] < CALL_GAP then
+		return false, "CrewCallWait"
+	end
+	local reach = 0
+	for _, p in ipairs(Players:GetPlayers()) do
+		if callable(p, player) then
+			reach += 1
+		end
+	end
+	if reach == 0 then
+		return false, "CrewCallNobody"
+	end
+	lastCall[player] = os.clock()
+	calls[player] = os.clock() + CALL_SECONDS
+	player:SetAttribute("CrewCallUntil", game:GetService("Workspace"):GetServerTimeNow() + CALL_SECONDS)
+	local size = crew and #crew.rec.members or 1
+	for _, p in ipairs(Players:GetPlayers()) do
+		if p ~= player then
+			callEvent:FireClient(p, { FromUserId = player.UserId, FromName = player.DisplayName,
+				Eligible = callable(p, player), Seconds = CALL_SECONDS, Size = size })
+		end
+	end
+	Telemetry.Custom(player, "CrewCall", reach)
+	local ends = calls[player]
+	task.delay(CALL_SECONDS + 0.5, function()
+		if calls[player] == ends then
+			closeCall(player)
+		end
+	end)
+	return true
+end
+
+-- `player` answers `caller`'s crew call (I'M IN). Returns true when they're now in the caller's crew.
+function CrewService.AnswerCall(player, caller)
+	if not caller or caller == player then
+		return false
+	end
+	if not callOpen(caller) or caller:GetAttribute("Side") ~= "Civilian" then
+		if caller.Parent == Players then
+			closeCall(caller)
+		end
+		notify:FireClient(player, "CrewCallGone")
+		return false
+	end
+	if CrewService.SameCrew(player, caller) then
+		return true
+	end
+	if player:GetAttribute("Side") ~= "Civilian" then
+		notify:FireClient(player, "CrewCallCivOnly")
+		return false
+	end
+	local id = caller:GetAttribute("Crew")
+	if id and crews[id] then
+		if not join(player, id) then
+			notify:FireClient(player, "CrewCallGone")
+			closeCall(caller)
+			return false
+		end
+	else
+		id = create({ caller, player })
+		for _, p in ipairs({ caller, player }) do
+			notify:FireClient(p, "CrewJoined")
+		end
+		handJob(id)
+	end
+	local crew = crews[id]
+	tell(caller, "CallJoined", { Name = player.DisplayName })
+	Telemetry.Custom(player, "CrewCallJoined", crew and #crew.rec.members or 2)
+	if not crew or #crew.rec.members >= MAX_CREW then
+		closeCall(caller)
+	end
+	return true
+end
+
 local function onRequest(player, action, arg)
 	if not RateLimit.Allow(player, "Crew", 2, 4) or type(action) ~= "string" then
 		return
@@ -907,6 +1035,13 @@ local function onRequest(player, action, arg)
 			notify:FireClient(p, "CrewJoined")
 		end
 		handJob(id)
+	elseif action == "Call" then
+		local sent, why = CrewService.Call(player)
+		notify:FireClient(player, sent and "CrewCallSent" or why)
+	elseif action == "CallJoin" then
+		if type(arg) == "number" then
+			CrewService.AnswerCall(player, Players:GetPlayerByUserId(arg))
+		end
 	elseif action == "Leave" then
 		leave(player)
 	elseif action == "Prep" then
@@ -1053,6 +1188,8 @@ function CrewService.Init()
 	notify = Remotes.Event("Notify")
 	inviteEvent = Remotes.Event("CrewInvite")
 	crewJob = Remotes.Event("CrewJob")
+	callEvent = Remotes.Event("CrewCall")
+	callClosed = Remotes.Event("CrewCallClosed")
 	Remotes.Event("RequestCrew").OnServerEvent:Connect(onRequest)
 	-- Crews are saved where players are (DataService has set SavesOff by now: memory in Studio without API
 	-- access, so nothing is written there).
@@ -1077,6 +1214,8 @@ function CrewService.Init()
 		task.spawn(loadFor, p)
 	end
 	Players.PlayerRemoving:Connect(function(p)
+		closeCall(p)
+		lastCall[p] = nil
 		goOffline(p)
 		invites[p] = nil
 		for target, inv in pairs(invites) do

@@ -2571,9 +2571,24 @@ function PAGES.Crew()
 		W.note(s, "INVITE FRIENDS shows here in the live game.", 0, nil, Enum.TextXAlignment.Center).Name = "InviteStudio"
 	end
 	local myCrew = player:GetAttribute("Crew")
+	-- INVITE EVERYONE HERE (CrewService "Call"): a crew call in chat for the whole server and an I'M IN card for
+	-- everyone free to join. Citizens only; it reads CREW CALL SENT while this player's call is open.
+	if player:GetAttribute("Side") == "Civilian" then
+		local callUntil = player:GetAttribute("CrewCallUntil")
+		local open = type(callUntil) == "number" and callUntil > workspace:GetServerTimeNow()
+		local call = W.button(s, "InviteEveryone", open and "CREW CALL SENT" or "INVITE EVERYONE HERE", open and "Quiet" or "Primary",
+			function()
+				if not open then
+					Remotes.Event("RequestCrew"):FireServer("Call")
+					PhoneUI.Close() -- (the answer is a toast, and the I'M IN cards go out to everyone else)
+				end
+			end)
+		call.Size = UDim2.new(1, 0, 0, touch)
+		call.LayoutOrder = 1
+	end
 	W.note(s, (myCrew and "Rob together: +20% cash when a crewmate is close." or "Invite players to rob together (+20% cash) and ride in each other's cars.")
-		.. (player:GetAttribute("FriendBonus") and "  Friend here: +10%!" or ""), 1, nil, Enum.TextXAlignment.Center).Name = "Info"
-	local order = 2
+		.. (player:GetAttribute("FriendBonus") and "  Friend here: +10%!" or ""), 2, nil, Enum.TextXAlignment.Center).Name = "Info"
+	local order = 3
 	-- THE CREW HEIST (CrewService): the preps that unlock THE BIG SCORE, played by the crew together (START sends
 	-- RequestCrew "Prep"; the server says why not if it can't), and RESUME HEIST / PAUSE HEIST (the plan on
 	-- everyone's screen, CrewClient). Without a crew, what a crew would get.
@@ -2749,13 +2764,23 @@ function PAGES.Crew()
 		if p ~= player and (not myCrew or p:GetAttribute("Crew") ~= myCrew) then
 			any = true
 			local side = p:GetAttribute("Side") or ""
+			-- Their crew call is open (CrewService "CrewCallUntil"): I'M IN joins their crew right away.
+			local callUntil = p:GetAttribute("CrewCallUntil")
+			local calling = type(callUntil) == "number" and callUntil > workspace:GetServerTimeNow()
+				and player:GetAttribute("Side") == "Civilian"
 			W.item(s, {
 				Name = tostring(p.UserId), Order = order,
 				Title = p.DisplayName,
-				Sub = side == "Cop" and "Police" or side == "Prisoner" and "In prison" or "Free roam",
-				Button = "INVITE", ButtonName = "Invite", Width = 88,
+				Sub = calling and "Wants to start a heist!" or side == "Cop" and "Police" or side == "Prisoner" and "In prison" or "Free roam",
+				SubColor = calling and C.Gold or nil,
+				Button = calling and "I'M IN" or "INVITE", ButtonName = calling and "Join" or "Invite", Kind = calling and "Primary" or nil,
+				Width = 88,
 				OnTap = function()
-					Remotes.Event("RequestCrew"):FireServer("Invite", p.UserId)
+					if calling then
+						Remotes.Event("RequestCrew"):FireServer("CallJoin", p.UserId)
+					else
+						Remotes.Event("RequestCrew"):FireServer("Invite", p.UserId)
+					end
 				end,
 			})
 			order += 1
