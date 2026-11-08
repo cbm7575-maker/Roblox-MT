@@ -51,6 +51,11 @@
 --     start a heist!", I'M IN (RequestCrew "CallJoin", their UserId) and NO THANKS. It never replaces a crew
 --     invite that's waiting. CrewCallClosed { FromUserId } takes that caller's card away (their crew is full, the
 --     call ran out or they left). The caller hears who answered (CrewJob "CallJoined" { Name }).
+--   * Meeting up (CrewService: joining from a card or a crew call brings you to the one who asked): remote
+--     CrewMeet { Name } fades the screen to black with "MEETING <NAME>" while you're moved, { Done } fades it
+--     back (never left black past MEET_SAFETY s). The toasts that go with it (MeetLater, MeetRide, MeetHere,
+--     MetUp) and the hands-on prep steps' (Grabbed, Dropped, Stashed, PairWait, ...) are namedToast's.
+--   * Prep things in the world (CrewTasks' prompts, attribute CrewId): only your own crew's show on this device.
 --   CrewClient.Crewmates() -> the other players in your crew
 
 local Players = game:GetService("Players")
@@ -136,7 +141,140 @@ local JOB_TOASTS = {
 	Together = { "Stick together: it counts once your crew is there with you.", "crew" },
 	Wanted = { "Lose the cops: it doesn't count while you're wanted.", "warning" },
 	NeedPreps = { "Do your crew preps first: %d of %d done (PHONE > CREW).", "warning" },
+	PairSync = { "Too far apart in time: hold both at once, one of you on each.", "warning" },
+	PairTwo = { "It takes two: your crewmate holds the other one at the same time.", "warning" },
+	NothingToStash = { "You're not carrying anything: grab it first, or your crewmate puts theirs in.", "info" },
+	NotYourJob = { "That's another crew's job.", "info" },
 }
+
+-- The hands-on crew steps and the meet-up (MissionService / CrewService toasts with names in them): the words,
+-- the colour and the style, or nil for a key that isn't one of these.
+local function namedToast(info)
+	local key = info.Key
+	local me = info.Name ~= nil and info.Name == player.DisplayName
+	local who = tostring(info.Name or "Your crewmate")
+	local item = tostring(info.Item or "it")
+	local done, total = tonumber(info.Done) or 0, tonumber(info.Total) or 0
+	local count = total > 1 and string.format(" (%d/%d)", done, total) or ""
+	if key == "Grabbed" then
+		return (me and ("Got the " .. item .. "!") or (who .. " grabbed the " .. item .. "!")) .. count, C.Gold, "crew"
+	elseif key == "Dropped" then
+		return (me and "You" or who) .. " dropped the " .. item .. ": grab it again (gold marker).", nil, "warning"
+	elseif key == "Stashed" then
+		return (me and "In it goes!" or (who .. " put it in!")) .. count, C.Cash, "crew"
+	elseif key == "PairWait" then
+		local action, other = string.upper(tostring(info.Action or "")), string.upper(tostring(info.Other or ""))
+		return me and ("Now your crewmate holds " .. other .. ", quick!")
+			or (who .. " did " .. action .. ": you hold " .. other .. " now, quick!"), C.Gold, "crew"
+	elseif key == "MeetLater" then
+		return "You're in " .. who .. "'s crew! Meet up: their pink tag is on your minimap.", C.Gold, "crew"
+	elseif key == "MeetRide" then
+		return "You're riding with " .. who .. ": your crew job starts now!", C.Gold, "crew"
+	elseif key == "MeetHere" then
+		return "You're with " .. who .. ": get in a car together!", C.Gold, "crew"
+	elseif key == "MetUp" then
+		return who .. (info.Ride and " is in your car: drive, the crew job is on your GPS!" or " is here with you!"), C.Gold, "crew"
+	end
+	return nil
+end
+
+-- The meet-up's fade (CrewService: the joiner is brought to the crewmate who asked): black for a moment with
+-- "MEETING <NAME>", then back. Never left black (MEET_SAFETY).
+local MEET_SAFETY = 3
+local meet = {} -- gui, curtain, label, token
+local function meetFade(info)
+	if type(info) ~= "table" then
+		return
+	end
+	if not meet.gui then
+		local sg = Instance.new("ScreenGui")
+		sg.Name = "CrewMeet"
+		sg.ResetOnSpawn = false
+		sg.IgnoreGuiInset = true
+		sg.DisplayOrder = 60
+		sg.Parent = player:WaitForChild("PlayerGui")
+		local curtain = Instance.new("Frame")
+		curtain.Name = "Curtain"
+		curtain.Size = UDim2.fromScale(1, 1)
+		curtain.BackgroundColor3 = Color3.new(0, 0, 0)
+		curtain.BackgroundTransparency = 1
+		curtain.BorderSizePixel = 0
+		curtain.Visible = false
+		curtain.Parent = sg
+		local label = Instance.new("TextLabel")
+		label.Name = "Text"
+		Theme.Text(label, 28, "Display")
+		label.TextColor3 = C.Gold
+		label.AnchorPoint = Vector2.new(0.5, 0.5)
+		label.Position = UDim2.fromScale(0.5, 0.5)
+		label.Size = UDim2.new(1, -40, 0, 40)
+		label.TextTransparency = 1
+		label.Parent = curtain
+		meet.gui, meet.curtain, meet.label = sg, curtain, label
+	end
+	meet.token = (meet.token or 0) + 1
+	local token = meet.token
+	local TweenService = game:GetService("TweenService")
+	local function fade(black, seconds)
+		meet.curtain.Visible = true
+		TweenService:Create(meet.curtain, TweenInfo.new(seconds), { BackgroundTransparency = black and 0 or 1 }):Play()
+		TweenService:Create(meet.label, TweenInfo.new(seconds), { TextTransparency = black and 0 or 1 }):Play()
+		if not black then
+			task.delay(seconds, function()
+				if meet.token == token then
+					meet.curtain.Visible = false
+				end
+			end)
+		end
+	end
+	if info.Done then
+		fade(false, 0.5)
+		return
+	end
+	meet.label.Text = "MEETING " .. string.upper(tostring(info.Name or "YOUR CREW"))
+	fade(true, 0.3)
+	task.delay(MEET_SAFETY, function()
+		if meet.token == token then
+			fade(false, 0.5)
+		end
+	end)
+end
+
+-- Other crews' prompts on their prep things (CrewTasks: attribute CrewId) don't show here; ours do.
+local function gateTaskPrompt(pr)
+	if pr:IsA("ProximityPrompt") and pr.Name == "CrewTaskPrompt" then
+		local mine = player:GetAttribute("Crew")
+		local want = mine ~= nil and pr:GetAttribute("CrewId") == mine
+		if pr.Enabled ~= want then
+			pr.Enabled = want
+		end
+	end
+end
+
+local function watchTaskPrompts()
+	local function hook(folder)
+		for _, d in ipairs(folder:GetDescendants()) do
+			gateTaskPrompt(d)
+		end
+		folder.DescendantAdded:Connect(gateTaskPrompt)
+	end
+	local Workspace = game:GetService("Workspace")
+	local existing = Workspace:FindFirstChild("CrewTasks")
+	if existing then
+		hook(existing)
+	end
+	Workspace.ChildAdded:Connect(function(c)
+		if c.Name == "CrewTasks" and c:IsA("Folder") then
+			hook(c)
+		end
+	end)
+	player:GetAttributeChangedSignal("Crew"):Connect(function()
+		local folder = Workspace:FindFirstChild("CrewTasks")
+		for _, d in ipairs(folder and folder:GetDescendants() or {}) do
+			gateTaskPrompt(d)
+		end
+	end)
+end
 
 function CrewClient.Crewmates()
 	local list = {}
@@ -891,6 +1029,11 @@ local function onJob(kind, info)
 		NotifyController.Show(tostring(info.Name or "Your crew") .. " is back on the heist: the plan is on your screen.", C.Gold,
 			"crew")
 	elseif kind == "Toast" then
+		local said, color, style = namedToast(info)
+		if said then
+			NotifyController.Show(said, color, style)
+			return
+		end
 		local t = JOB_TOASTS[info.Key]
 		if t then
 			local text = t[1]
@@ -934,6 +1077,10 @@ function CrewClient.Init()
 	Remotes.OnClient("CrewCall", showCall)
 	Remotes.OnClient("CrewCallClosed", closeCallCard)
 	Remotes.OnClient("CrewJob", onJob)
+	task.spawn(function()
+		Remotes.OnClient("CrewMeet", meetFade)
+	end)
+	watchTaskPrompts()
 	player:GetAttributeChangedSignal("FriendBonus"):Connect(function()
 		if player:GetAttribute("FriendBonus") then
 			NotifyController.Show("A friend is in this server: +10% heist cash!", C.Cash)
@@ -956,10 +1103,23 @@ function CrewClient.Init()
 		end
 	end)
 	player:GetAttributeChangedSignal("Crew"):Connect(function()
-		if player:GetAttribute("Crew") ~= nil and card and cardKind == "Tip" then
+		local mine = player:GetAttribute("Crew")
+		if mine ~= nil and card and cardKind == "Tip" then
 			card:Destroy()
 			card = nil
 		end
+		-- In the caller's crew already (by an invite, or the server's answer): their call card has done its job.
+		-- (a moment later: the caller's own Crew attribute may land after ours)
+		task.delay(0.5, function()
+			local now = player:GetAttribute("Crew")
+			if now ~= nil and card and cardKind == "Call" then
+				local from = Players:GetPlayerByUserId(tonumber(card:GetAttribute("From")) or 0)
+				if from and from:GetAttribute("Crew") == now then
+					card:Destroy()
+					card = nil
+				end
+			end
+		end)
 	end)
 	local lastTags, lastCheck, lastTip = 0, 0, 0
 	RunService.Heartbeat:Connect(function()

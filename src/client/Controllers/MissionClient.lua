@@ -25,6 +25,10 @@
 --     CREW PREP instead of MISSION on the PC banner's tag; its Place / Places spots come from
 --     Missions.Resolve, as on the server); and
 --     CROWD FAVOURITE in gold for the car meet's best ride (CarMeetResult).
+--   * A crew prep's hands-on steps (Pickup, Deliver, Pair: MissionService puts items / stand / spots in the
+--     "Mission" JSON): a marker on every thing lying on the ground (to grab, or dropped on the way), on the
+--     Deliver stand and on the Pair spots not done yet; the GPS goes to the nearest thing on the ground, else
+--     the stand or the spots. The step line counts them ("1/3") and says what you carry ("you carry 2").
 -- Hidden on the first-join title screen (local attribute TitleScreen, set by TeamUI).
 
 local Players = game:GetService("Players")
@@ -241,6 +245,43 @@ local function refresh()
 			end
 		end
 		target = best
+	elseif current.Kind == "Pickup" or current.Kind == "Deliver" or current.Kind == "Pair" then
+		-- A crew prep's hands-on step (MissionService): the things on the ground (to grab, or dropped on the
+		-- way), the stand to bring them to, or the two spots of a pair job. The GPS goes to the nearest thing
+		-- on the ground, else the stand or the spots.
+		local root = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+		local best, bestD
+		local function consider(x, z, mark)
+			local p = Vector3.new(tonumber(x) or 0, 0, tonumber(z) or 0)
+			if mark then
+				marker(p)
+			end
+			local d = root and (p - root.Position * Vector3.new(1, 0, 1)).Magnitude or 0
+			if not bestD or d < bestD then
+				best, bestD = p, d
+			end
+		end
+		for _, it in ipairs(s.items or {}) do
+			if it.s == "g" then
+				consider(it.x, it.z, true)
+			end
+		end
+		if not best and current.Kind == "Deliver" then
+			local stand = s.stand
+			consider(stand and stand.x or current.Pos.X, stand and stand.z or current.Pos.Z, true)
+		elseif current.Kind == "Deliver" and s.stand then
+			marker(Vector3.new(s.stand.x, 0, s.stand.z))
+		elseif current.Kind == "Pair" then
+			for _, spot in ipairs(s.spots or {}) do
+				if not spot.d then
+					consider(spot.x, spot.z, true)
+				end
+			end
+			if not best then
+				consider(current.Pos.X, current.Pos.Z, true)
+			end
+		end
+		target = best or current.Pos
 	else
 		target = current.Pos
 		marker(current.Pos)
@@ -355,6 +396,31 @@ local function tick(dt)
 	local words = escape(current.Text)
 	if current.Kind == "Collect" then
 		words ..= "   " .. colorText(C.Gold, string.format("%d/%d", #(state.got or {}), #current.Points))
+	elseif current.Kind == "Pickup" or current.Kind == "Deliver" or current.Kind == "Pair" then
+		-- How far along: grabbed (this step's things), in the stand (all of them), or pair spots done; and what
+		-- you carry yourself.
+		local done, total, mine = 0, 0, 0
+		if current.Kind == "Pair" then
+			for _, spot in ipairs(state.spots or {}) do
+				total += 1
+				done += spot.d and 1 or 0
+			end
+		end
+		for _, it in ipairs(state.items or {}) do
+			if current.Kind == "Deliver" or it.p == state.step then
+				total += 1
+				done += ((current.Kind == "Deliver" and it.s == "s") or (current.Kind == "Pickup" and it.s ~= "g")) and 1 or 0
+			end
+			if it.s == "c" and it.u == player.UserId then
+				mine += 1
+			end
+		end
+		if total > 1 then
+			words ..= "   " .. colorText(C.Gold, string.format("%d/%d", done, total))
+		end
+		if mine > 0 then
+			words ..= "   " .. colorText(C.Cash, mine > 1 and string.format("you carry %d", mine) or "you carry 1")
+		end
 	end
 	if words ~= lastStep then
 		lastStep = words

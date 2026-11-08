@@ -42,6 +42,23 @@
 -- every crewmate here who is free comes along, and it needs Missions.CrewJob.Together of them (Studio: 1).
 -- One prep at a time per crew. If a member leaves and fewer than two are left, the crew breaks up and the
 -- job goes with it.
+-- Meeting up (owner, Nov 7 2026: "If someone accepts the heist that you put out for them, have it where they
+-- both spawn in... and they have a car that they get in together and go do things together"). Someone who joins
+-- from an invite card (the phone's INVITE, a ride's CREW UP?, a friend's Roblox invite) or a crew call's I'M IN
+-- is brought to the one who asked (the host); a saved crew coming back next session is not.
+--   * Only when both are citizens, alive, not wanted, not inside a home, a tour or a penthouse room, and not on
+--     a mission, race, job shift or the Big Score; and the host isn't in a boat. Else the joiner hears where
+--     to find the host instead (CrewJob "Toast" MeetLater { Name }).
+--   * The car: the host's own land car if it's out within MeetUp.Range of them; else, with the host on foot, a
+--     new one of theirs on the road beside them (their last car if they still own it, else the starter;
+--     VehicleService.Spawn: no cooldown, not saved as their pick) with the host in the driver's seat.
+--   * The joiner: unless they're already in that car (a ride, then CREW UP?), a short fade (remote CrewMeet
+--     { Name }, then { Name, Done = true }; none when they were already within MeetUp.Range), then by the car's
+--     passenger door and into that seat (VehicleService.TryRide: crewmates ride); no car or no free seat: on
+--     foot beside the host. Both hear it (Toast MeetRide / MeetHere to the joiner, MetUp { Name, Ride } to
+--     the host). Telemetry CrewMeetUp (1 = seated together, 0 = on foot).
+--   * MeetUp.AutoPrep seconds later the crew's next prep starts by itself (the GPS has somewhere to go at
+--     once) if one is left, none is running, the heist isn't paused and both are still free for a prep.
 -- PAUSE HEIST ("Pause", true) puts the whole crew's heist on hold: the plan leaves every member's screen
 -- (saved: it stays paused next time too) and the progress is kept. RESUME HEIST on the phone ("Pause",
 -- false), starting a prep, or a new member joining brings it back. The crew hears who did it (CrewJob
@@ -61,7 +78,8 @@
 -- draw tags.
 -- Remotes: RequestCrew(action, arg) with action "Invite" (target userId) | "Accept" | "Decline" | "Leave" |
 --          "Prep" (prepId, or nil for the next one not done) | "Pause" (true = pause, false = resume);
---          CrewInvite (server -> client) { FromUserId, FromName, Switch };
+--          CrewInvite (server -> client) { FromUserId, FromName, Switch }; CrewMeet (server -> the joiner)
+--          { Name, Done } (the meet-up's fade);
 --          CrewJob (server -> client) kind, info: "New" / "Joined" { Done, Total, Mates }, "Back" { Done,
 --          Total, Mates }, "PrepDone" { Name, Done, Total }, "Ready", "Reset", "Broke" { Name }, "Left"
 --          { Name }, "Paused" / "Resumed" { Name }, "Toast" { Key, Done, Total } (CrewClient has the words).
@@ -94,6 +112,7 @@ CrewService.CrewBonus = 0.2
 CrewService.FriendBonus = 0.1
 
 local JOB = Missions.CrewJob
+local MEET = JOB.MeetUp or {}
 
 -- [crewId] = { members = { players in this server }, rec = the saved record (see the header), running = prepId }
 local crews = {}
@@ -102,7 +121,7 @@ local calls = {} -- [caller] = os.clock() when their open crew call ends
 local lastCall = {} -- [caller] = os.clock() of their last crew call (CALL_GAP)
 local friendsOf = {} -- [player] = { [userId] = true } for each Roblox friend in this server
 local nextId = 0
-local notify, inviteEvent, crewJob, callEvent, callClosed
+local notify, inviteEvent, crewJob, callEvent, callClosed, crewMeet
 
 local Store = {
 	ds = nil, -- the DataStore, or nil in memory mode
@@ -827,6 +846,167 @@ function CrewService.ScoreDone(players)
 	end
 end
 
+------------------------------------------------------------------ meeting up (see the header)
+
+-- A living character's humanoid and root part, or nil.
+local function bodyOf(p)
+	local char = p.Character
+	local hum = char and char.FindFirstChildOfClass and char:FindFirstChildOfClass("Humanoid")
+	local root = char and char:FindFirstChild("HumanoidRootPart")
+	if not hum or hum.Health <= 0 or not root then
+		return nil
+	end
+	return hum, root
+end
+
+-- Free to be moved to a crewmate: a citizen with a body, not wanted, not indoors, not busy.
+local function meetFree(p)
+	if p.Parent ~= Players or p:GetAttribute("Side") ~= "Civilian" or (p:GetAttribute("Heat") or 0) > 0 then
+		return false
+	end
+	for _, name in ipairs({ "InHome", "Touring", "InApartment", "Mission", "RacingId", "JobKind", "BigScore" }) do
+		if p:GetAttribute(name) then
+			return false
+		end
+	end
+	local ok, MissionService = pcall(svc, "MissionService")
+	if ok and MissionService.Active(p) then
+		return false
+	end
+	return bodyOf(p) ~= nil
+end
+
+-- The host's car for the crew: their last land car if they still own it and may drive it, else the starter.
+local function carFor(host, VehicleService)
+	local okT, Teams = pcall(require, ReplicatedStorage.Shared.Config.Teams)
+	local team = okT and Teams.BySide and Teams.BySide.Civilian
+	local id = team and team.Starter or "Palmetto"
+	local last = (VehicleService.LastCarFor and VehicleService.LastCarFor(host, "Civilian")) or host:GetAttribute("LastCar")
+	local okV, Vehicles = pcall(require, ReplicatedStorage.Shared.Config.Vehicles)
+	local def = okV and type(last) == "string" and Vehicles.ById[last] or nil
+	if def and not def.Boat and VehicleService.CanDrive("Civilian", last) then
+		local okG, owns = pcall(function()
+			return svc("GarageService").Owns(host, last)
+		end)
+		if (okG and owns) or RunService:IsStudio() then
+			id = last
+		end
+	end
+	return id
+end
+
+-- Out of whatever seat they're in (their own car stays where it is).
+local function unseat(hum)
+	local seat = hum.SeatPart
+	if seat then
+		for _, j in ipairs(seat:GetChildren()) do
+			if j:IsA("JointInstance") and j.Part1 and j.Part1:IsDescendantOf(hum.Parent) then
+				j:Destroy()
+			end
+		end
+	end
+	hum.Sit = false
+end
+
+-- (see the header) The crew's next prep, by itself, a few seconds after two of them met up.
+local function autoPrep(a, b)
+	local delay = MEET.AutoPrep
+	if not delay then
+		return
+	end
+	task.delay(delay, function()
+		local id = a:GetAttribute("Crew")
+		local crew = id and crews[id]
+		if not crew or b:GetAttribute("Crew") ~= id or crew.running or crew.rec.paused or not nextPrep(crew) then
+			return
+		end
+		if freeForPrep(a) and freeForPrep(b) then
+			CrewService.StartPrep(b, nil)
+		end
+	end)
+end
+
+-- (see the header) `joiner` has just joined `host`'s crew: bring them together in one car.
+local function meetUp(joiner, host)
+	if joiner == host or not CrewService.SameCrew(joiner, host) then
+		return
+	end
+	if not meetFree(joiner) or not meetFree(host) then
+		toast(joiner, "MeetLater", { Name = host.DisplayName })
+		return
+	end
+	local VehicleService = svc("VehicleService")
+	local hHum, hRoot = bodyOf(host)
+	local jHum, jRoot = bodyOf(joiner)
+	local range = MEET.Range or 60
+	local seat = hHum.SeatPart
+	local car = VehicleService.GetCar(host)
+	local chassis = car and car.Parent and car.PrimaryPart
+	if not chassis or car:GetAttribute("Boat") == true or (chassis.Position - hRoot.Position).Magnitude > range then
+		car = nil
+	end
+	if seat and not (car and seat:IsDescendantOf(car)) then
+		-- Riding in someone else's car, or sitting on a boat or a bench: no crew car here.
+		local model = seat:FindFirstAncestorOfClass("Model")
+		if model and model:GetAttribute("Boat") == true then
+			toast(joiner, "MeetLater", { Name = host.DisplayName })
+			return
+		end
+		car = nil
+	elseif not car then
+		-- On foot with no car of theirs close by: one on the road beside them, the host at the wheel.
+		car = VehicleService.Spawn(host, carFor(host, VehicleService), { IgnoreCooldown = true, Auto = true, Sit = true })
+	end
+	if car and jHum.SeatPart and jHum.SeatPart:IsDescendantOf(car) then
+		autoPrep(joiner, host) -- (a ride, then CREW UP?: already in the car together)
+		return
+	end
+	local together = (jRoot.Position - hRoot.Position).Magnitude <= range
+	if not together then
+		crewMeet:FireClient(joiner, { Name = host.DisplayName })
+	end
+	task.delay(together and 0.2 or (MEET.Fade or 0.45), function()
+		local hum = bodyOf(joiner)
+		local _, hostRoot = bodyOf(host)
+		if not hum or not hostRoot or host.Parent ~= Players or not CrewService.SameCrew(joiner, host) then
+			if joiner.Parent == Players and not together then
+				crewMeet:FireClient(joiner, { Name = host.DisplayName, Done = true })
+			end
+			return
+		end
+		if hum.SeatPart then
+			unseat(hum)
+		end
+		local seated = false
+		local pseat = car and car.Parent and car:FindFirstChild("PassengerSeat")
+		if pseat and pseat:IsA("Seat") and not pseat.Occupant then
+			local door = car.PrimaryPart and car.PrimaryPart:FindFirstChild("PassengerDoor")
+			local at = door and door:IsA("Attachment") and door.WorldCFrame
+				or CFrame.lookAt(pseat.Position + pseat.CFrame.RightVector * 4, pseat.Position)
+			joiner.Character:PivotTo(at)
+			seated = VehicleService.TryRide(joiner, car) == true
+		end
+		if not seated and not together then
+			joiner.Character:PivotTo(hostRoot.CFrame * CFrame.new(4, 0, 2))
+		end
+		if not together then
+			crewMeet:FireClient(joiner, { Name = host.DisplayName, Done = true })
+		end
+		toast(joiner, seated and "MeetRide" or "MeetHere", { Name = host.DisplayName })
+		toast(host, "MetUp", { Name = joiner.DisplayName, Ride = seated })
+		Telemetry.Custom(joiner, "CrewMeetUp", seated and 1 or 0)
+		autoPrep(joiner, host)
+	end)
+end
+
+-- Never lets a meet-up stop a join.
+local function bringTogether(joiner, host)
+	local ok, err = pcall(meetUp, joiner, host)
+	if not ok then
+		warn("[CrewService] meet-up: " .. tostring(err))
+	end
+end
+
 ------------------------------------------------------------------ invites
 
 -- Heist bonus multiplier for this player right now (crew nearby, friend in server).
@@ -988,6 +1168,7 @@ function CrewService.AnswerCall(player, caller)
 		end
 		handJob(id)
 	end
+	bringTogether(player, caller)
 	local crew = crews[id]
 	tell(caller, "CallJoined", { Name = player.DisplayName })
 	Telemetry.Custom(player, "CrewCallJoined", crew and #crew.rec.members or 2)
@@ -1027,7 +1208,9 @@ local function onRequest(player, action, arg)
 		if id and crews[id] then
 			if not join(player, id) then
 				notify:FireClient(player, "CrewFull")
+				return
 			end
+			bringTogether(player, leader)
 			return
 		end
 		id = create({ leader, player })
@@ -1035,6 +1218,7 @@ local function onRequest(player, action, arg)
 			notify:FireClient(p, "CrewJoined")
 		end
 		handJob(id)
+		bringTogether(player, leader)
 	elseif action == "Call" then
 		local sent, why = CrewService.Call(player)
 		notify:FireClient(player, sent and "CrewCallSent" or why)
@@ -1190,6 +1374,7 @@ function CrewService.Init()
 	crewJob = Remotes.Event("CrewJob")
 	callEvent = Remotes.Event("CrewCall")
 	callClosed = Remotes.Event("CrewCallClosed")
+	crewMeet = Remotes.Event("CrewMeet")
 	Remotes.Event("RequestCrew").OnServerEvent:Connect(onRequest)
 	-- Crews are saved where players are (DataService has set SavesOff by now: memory in Studio without API
 	-- access, so nothing is written there).

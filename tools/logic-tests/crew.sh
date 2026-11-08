@@ -114,14 +114,72 @@ services.RunService.Heartbeat = newSignal()
 local RS = services.ReplicatedStorage
 RS:SetAttribute("SavesOff", false)
 
--- Players with a body that can be moved (y = 0) and a speed.
+-- CFrames (enough for the meet-up: a position, moved by another one).
+local CFm = {}
+CFm.__index = CFm
+CFrame = {}
+function CFrame.new(x, y, z)
+	return setmetatable({ Position = Vector3.new(x, y, z) }, CFm)
+end
+function CFrame.lookAt(a)
+	return setmetatable({ Position = a }, CFm)
+end
+CFm.__mul = function(a, b)
+	return setmetatable({ Position = a.Position + b.Position }, CFm)
+end
+
+-- Players with a body that can be moved (y = 0) and a speed. No Humanoid unless giveHumanoid (the
+-- meet-up needs a living body; without one it leaves everybody where they are, as before).
 function newMate(id)
 	local p = newPlayer(id)
 	p.DisplayName = "P" .. id
-	local root = { Position = Vector3.new(0, 0, 0), AssemblyLinearVelocity = Vector3.new(0, 0, 0) }
-	p.Character = { HumanoidRootPart = root, FindFirstChild = function(self, n) return rawget(self, n) end }
+	local root = setmetatable({ Position = Vector3.new(0, 0, 0), AssemblyLinearVelocity = Vector3.new(0, 0, 0) }, {
+		__index = function(t, k)
+			if k == "CFrame" then
+				return CFrame.new(t.Position.X, t.Position.Y, t.Position.Z)
+			end
+			return nil
+		end,
+	})
+	p.Character = { HumanoidRootPart = root, FindFirstChild = function(self, n) return rawget(self, n) end,
+		FindFirstChildOfClass = function(self, c) return c == "Humanoid" and rawget(self, "Humanoid") or nil end,
+		PivotTo = function(self, cf) self.HumanoidRootPart.Position = cf.Position end }
 	p:SetAttribute("Side", "Civilian")
 	return p
+end
+function giveHumanoid(p)
+	p.Character.Humanoid = { Health = 100, SeatPart = nil, Sit = false, Parent = p.Character }
+	return p.Character.Humanoid
+end
+
+-- CrewTasks' world, as a log: what MissionService asked to build, carry and stash (Spot = the point itself).
+WORLD = { runs = {} }
+TASKS = {
+	Run = function(crewId, onAct)
+		local run = { crewId = crewId, onAct = onAct, calls = {}, cleared = false }
+		function run:Spot(pos) return pos end
+		function run:Item(i, look, name) table.insert(self.calls, { "Item", i, look, name }) end
+		function run:Carry(i, p, slot) table.insert(self.calls, { "Carry", i, p.UserId, slot }) end
+		function run:Stand(_, action, look) table.insert(self.calls, { "Stand", action, look }) end
+		function run:Stash(i, n) table.insert(self.calls, { "Stash", i, n }) end
+		function run:PairSpot(k, _, action) table.insert(self.calls, { "PairSpot", k, action }) end
+		function run:PairLight(k, on) table.insert(self.calls, { "PairLight", k, on }) end
+		function run:ClearPair() table.insert(self.calls, { "ClearPair" }) end
+		function run:ClearStand() table.insert(self.calls, { "ClearStand" }) end
+		function run:Clear() self.cleared = true end
+		table.insert(WORLD.runs, run)
+		WORLD.last = run
+		return run
+	end,
+}
+function worldCalls(kind)
+	local out = {}
+	for _, c in ipairs(WORLD.last and WORLD.last.calls or {}) do
+		if c[1] == kind then
+			table.insert(out, c)
+		end
+	end
+	return out
 end
 function moveTo(p, x, z, speed)
 	p.Character.HumanoidRootPart.Position = Vector3.new(x, 0, z)
@@ -175,6 +233,7 @@ local function server(playersObj)
 		DataService = { OnLoaded = function() end, Get = function() return nil end },
 		ProgressService = { Event = function(p, kind, n) XP[p.UserId] = (XP[p.UserId] or 0) + n end },
 		RideService = { OfferJob = function(a, b) table.insert(OFFERS, { a, b }) end },
+		CrewTasks = TASKS,
 		FindFirstChild = function(self, n) return rawget(self, n) end,
 	}
 	SSS.Services.MissionService = loadMission()
@@ -201,6 +260,100 @@ function crewOf2(a, b)
 end
 local function preps(p)
 	return p:GetAttribute("CrewPreps")
+end
+local function act(p, kind, i)
+	return SSS.Services.MissionService.CrewAct(p, kind, i)
+end
+-- Play the crew prep step a and b are on, side by side, the way the world prompts would (half a minute
+-- per leg, so the anti-teleport check never bites).
+function playStep(a, b)
+	local st = decode(a:GetAttribute("Mission"))
+	local step = MISSIONS.ById[st.id].Steps[st.step]
+	if step.Kind == "Pickup" then
+		for i, it in ipairs(st.items) do
+			if it.p == st.step and it.s == "g" then
+				runUntil(clock() + 30)
+				moveTo(a, it.x, it.z) moveTo(b, it.x, it.z)
+				ticks(1)
+				act(a, "Grab", i)
+			end
+		end
+	elseif step.Kind == "Deliver" then
+		runUntil(clock() + 30)
+		moveTo(a, st.stand.x, st.stand.z) moveTo(b, st.stand.x, st.stand.z)
+		ticks(1)
+		act(a, "Stash") act(b, "Stash")
+	elseif step.Kind == "Pair" then
+		runUntil(clock() + 30)
+		moveTo(a, st.spots[1].x, st.spots[1].z) moveTo(b, st.spots[2].x, st.spots[2].z)
+		ticks(1)
+		act(a, "Pair", 1) act(b, "Pair", 2)
+	else
+		for _, pt in ipairs(step.Points or { step.Pos }) do
+			runUntil(clock() + 30)
+			moveTo(a, pt.X, pt.Z) moveTo(b, pt.X, pt.Z)
+			ticks(5, 1.2)
+		end
+	end
+	ticks(2)
+end
+function playPrep(a, b)
+	for _ = 1, 10 do
+		if not a:GetAttribute("Mission") then
+			return
+		end
+		playStep(a, b)
+	end
+end
+-- A VehicleService stand-in for the meet-up: cars are tables with two seats; Spawn / TryRide seat people.
+function vehicleStub()
+	local VS = { cars = {}, spawned = {} }
+	local function seatOf(car, name)
+		local seat = { Name = name, Occupant = nil, Position = car.PrimaryPart.Position,
+			CFrame = CFrame.new(car.PrimaryPart.Position.X, 0, car.PrimaryPart.Position.Z) }
+		seat.CFrame.RightVector = Vector3.new(1, 0, 0)
+		function seat:IsA(c) return c == "Seat" end
+		function seat:IsDescendantOf(m) return m == car end
+		function seat:GetChildren() return {} end
+		function seat:FindFirstAncestorOfClass() return car end
+		return seat
+	end
+	function VS.newCar(owner, x, z)
+		local car = { Parent = true, _attrs = {}, PrimaryPart = { Position = Vector3.new(x, 0, z) } }
+		function car:GetAttribute(k) return self._attrs[k] end
+		function car:FindFirstChild(n) return self[n] end
+		car.DriverSeat, car.PassengerSeat = seatOf(car, "DriverSeat"), seatOf(car, "PassengerSeat")
+		local door = { WorldCFrame = CFrame.new(x + 4, 0, z) }
+		function door:IsA(c) return c == "Attachment" end
+		car.PrimaryPart.FindFirstChild = function(_, n) return n == "PassengerDoor" and door or nil end
+		VS.cars[owner.UserId] = car
+		return car
+	end
+	function VS.GetCar(p) return VS.cars[p.UserId] end
+	function VS.LastCarFor() return nil end
+	function VS.CanDrive() return true end
+	function VS.Spawn(p, id, opts)
+		local root = p.Character.HumanoidRootPart
+		local car = VS.newCar(p, root.Position.X + 14, root.Position.Z)
+		table.insert(VS.spawned, { p = p, id = id, opts = opts })
+		if opts and opts.Sit and p.Character.Humanoid then
+			p.Character.Humanoid.SeatPart = car.DriverSeat
+			car.DriverSeat.Occupant = p.Character.Humanoid
+		end
+		return car
+	end
+	function VS.TryRide(who, car)
+		local seat = car.PassengerSeat
+		local root = who.Character.HumanoidRootPart
+		if seat.Occupant or (root.Position - seat.Position).Magnitude > 18 then
+			return false
+		end
+		seat.Occupant = who.Character.Humanoid
+		who.Character.Humanoid.SeatPart = seat
+		return true
+	end
+	SSS.Services.VehicleService = VS
+	return VS
 end
 EOF
 		echo "local CS, MS = server()"
@@ -267,28 +420,73 @@ check("both on the prep", a:GetAttribute("Mission") ~= nil and b:GetAttribute("M
 check("crew shows the prep running", a:GetAttribute("CrewPrepRun") == "PrepGear")
 local m = MISSIONS.ById.PrepGear
 check("places resolved from the map list", m.Steps[1].Points[1].X == 1000 and m.Steps[2].Pos.X == 4000)
--- A drives to Coast Arms alone: it does not count, and the crew hears why.
+local st = decode(a:GetAttribute("Mission"))
+check("three things to grab, on the ground at the stops", #st.items == 3 and st.items[1].s == "g" and st.items[1].x == 1000
+	and st.items[3].x == 3000 and st.items[2].n == "Drill motor")
+local made = worldCalls("Item")
+check("the world puts them out", #made == 3 and made[2][3] == "Motor" and made[3][4] == "Power pack")
+-- A drives to Coast Arms alone: grabbing does not count, and the crew hears why.
 runUntil(clock() + 20)
 moveTo(a, 1000, 0)
 ticks(3)
-local got = decode(a:GetAttribute("Mission")).got
-check("one alone does not count", #got == 0, #got)
-check("told to stick together", #sent(a, "CrewJob", "Toast") >= 1 and lastSent(a, "CrewJob", "Toast")[2].Key == "Together")
+check("told to stick together", lastSent(a, "CrewJob", "Toast") and lastSent(a, "CrewJob", "Toast")[2].Key == "Together")
+check("grabbing alone does not count", act(a, "Grab", 1) == false and decode(a:GetAttribute("Mission")).items[1].s == "g")
 moveTo(b, 1000, 0)
-ticks(3)
-check("together it counts", #decode(a:GetAttribute("Mission")).got == 1)
-for _, x in ipairs({ 2000, 3000 }) do
-	runUntil(clock() + 20)
-	moveTo(a, x, 0) moveTo(b, x, 0)
-	ticks(3)
-end
-check("on to the Hideout", decode(a:GetAttribute("Mission")).step == 2)
+moveTo(a, 1030, 0)
+check("out of reach does not count", act(a, "Grab", 1) == false)
+moveTo(a, 1000, 0)
+check("together it is grabbed", act(a, "Grab", 1) == true)
+st = decode(a:GetAttribute("Mission"))
+check("carried by A", st.items[1].s == "c" and st.items[1].u == 1 and a:GetAttribute("CrewCarry") == 1)
+local c1 = worldCalls("Carry")[1]
+check("in A hand", c1 and c1[2] == 1 and c1[3] == 1 and c1[4] == 1)
+local said = lastSent(b, "CrewJob", "Toast")[2]
+check("the crew hears it", said.Key == "Grabbed" and said.Item == "Drill bits" and said.Done == 1 and said.Total == 3 and said.Name == "P1")
+check("a thing already carried cannot be grabbed", act(b, "Grab", 1) == false)
+check("nothing to stash before the Hideout", act(a, "Stash") == false)
 runUntil(clock() + 20)
-moveTo(a, 4000, 0) moveTo(b, 4000, 0)
-ticks(3)
+moveTo(a, 2000, 0) moveTo(b, 2000, 0)
+ticks(1)
+act(a, "Grab", 2)
+local c2 = worldCalls("Carry")[2]
+check("a second one goes on the back", c2 and c2[3] == 1 and c2[4] == 2 and a:GetAttribute("CrewCarry") == 2)
+runUntil(clock() + 20)
+moveTo(a, 3000, 0) moveTo(b, 3000, 0)
+ticks(1)
+act(b, "Grab", 3)
+ticks(2)
+st = decode(a:GetAttribute("Mission"))
+check("all grabbed: on to the Hideout", st.step == 2 and st.stand and st.stand.x == 4000)
+check("the crate is out", worldCalls("Stand")[1] and worldCalls("Stand")[1][2] == "Stash parts" and worldCalls("Stand")[1][3] == "Crate")
+-- B dies on the way: the power pack drops where B fell.
+runUntil(clock() + 10)
+moveTo(a, 3500, 0) moveTo(b, 3500, 0)
+ticks(1)
+giveHumanoid(b).Health = 0
+ticks(2)
+st = decode(a:GetAttribute("Mission"))
+check("a dead carrier drops it where they fell", st.items[3].s == "g" and st.items[3].x == 3500 and b:GetAttribute("CrewCarry") == nil)
+check("the crew hears it dropped", lastSent(a, "CrewJob", "Toast")[2].Key == "Dropped" and lastSent(a, "CrewJob", "Toast")[2].Item == "Power pack")
+check("the world puts it back on the ground", #worldCalls("Item") == 4)
+check("still the Hideout step", st.step == 2)
+b.Character.Humanoid = nil -- (respawned)
+ticks(1)
+check("grabbed again", act(b, "Grab", 3) == true and b:GetAttribute("CrewCarry") == 1)
+runUntil(clock() + 30)
+moveTo(a, 4000, 0)
+ticks(1)
+check("stashing alone does not count", act(a, "Stash") == false and lastSent(a, "CrewJob", "Toast")[2].Key == "Together")
+moveTo(b, 4000, 0)
+check("A stashes both of theirs", act(a, "Stash") == true and a:GetAttribute("CrewCarry") == nil and #worldCalls("Stash") == 2)
+check("the crew hears 2/3", lastSent(b, "CrewJob", "Toast")[2].Key == "Stashed" and lastSent(b, "CrewJob", "Toast")[2].Done == 2)
+check("A has nothing left", act(a, "Stash") == false and lastSent(a, "CrewJob", "Toast")[2].Key == "NothingToStash")
+check("not done until the last one is in", decode(a:GetAttribute("Mission")) ~= nil)
+act(b, "Stash")
+ticks(2)
 check("prep over for both", a:GetAttribute("Mission") == nil and b:GetAttribute("Mission") == nil)
 check("both paid", (a:GetAttribute("Cash") or 0) == 1500 and (b:GetAttribute("Cash") or 0) == 1500)
 check("both got XP", XP[1] == 120 and XP[2] == 120)
+check("the world is cleared", WORLD.last.cleared == true)
 runUntil(clock() + 1)
 check("prep marked done", preps(a) == ",PrepGear," and preps(b) == ",PrepGear,")
 check("prep saved", STORE.data["c_" .. a:GetAttribute("Crew")].preps.PrepGear == true)
@@ -331,12 +529,14 @@ crewOf2(a, b)
 fire(a, "RequestCrew", "Prep", "PrepGetaway")
 runUntil(clock() + 0.1)
 local before = decode(a:GetAttribute("Mission")).deadline
-runUntil(clock() + 30)
-moveTo(a, -292, -940) moveTo(b, -292, -940)
-ticks(3)
-local after = decode(a:GetAttribute("Mission")).deadline
--- Street (-292,-940) to the Hideout (4000,0): about 4400 studs - 85 / 40 + 30 = about 138 s.
-check("the getaway clock starts", after < before and after - clock() < 150 and after - clock() > 120, after - clock())
+playStep(a, b) -- the fake plates at Spray & Go (3000, 0)
+check("plates fitted: on to the bag", decode(a:GetAttribute("Mission")).step == 2)
+playStep(a, b) -- the bag outside the Gold Reserve (-292, -940)
+local st = decode(a:GetAttribute("Mission"))
+check("bag grabbed: the race is on", st.step == 3 and st.items[1].s == "c")
+local after = st.deadline
+-- Street (-292,-940) to the Hideout (4000,0): about 4400 studs - 85 / 40 + 40 = about 149 s.
+check("the getaway clock starts", after < before and after - clock() < 160 and after - clock() > 120, after - clock())
 runUntil(after + 1)
 ticks(2)
 check("too slow fails it", a:GetAttribute("Mission") == nil)
@@ -344,6 +544,7 @@ local failed = lastSent(a, "MissionEvent", "Failed")
 check("with the getaway reason", failed and string.find(failed[2].Reason, "Too slow", 1, true) ~= nil, failed and failed[2].Reason)
 check("not marked done", preps(a) == "")
 check("crew can try again", a:GetAttribute("CrewPrepRun") == nil)
+check("the bag went with the failed prep", a:GetAttribute("CrewCarry") == nil and WORLD.last.cleared == true)
 '
 
 scenario mate_quits_mid_prep '
@@ -421,16 +622,7 @@ for _, prep in ipairs({ "PrepGear", "PrepCase", "PrepGetaway" }) do
 	fire(a, "RequestCrew", "Prep", prep)
 	runUntil(clock() + 0.1)
 	check(prep .. " started", MS.Active(a) and MS.Active(b))
-	-- finish it: walk every step together
-	local m = MISSIONS.ById[prep]
-	for _, step in ipairs(m.Steps) do
-		local pts = step.Points or { step.Pos }
-		for _, pt in ipairs(pts) do
-			runUntil(clock() + 30)
-			moveTo(a, pt.X, pt.Z) moveTo(b, pt.X, pt.Z)
-			ticks(5, 1.2) -- (a Hold step: 3 s stopped)
-		end
-	end
+	playPrep(a, b) -- (every step together)
 	runUntil(clock() + 1)
 end
 check("all preps done", preps(a) == ",PrepGear,PrepCase,PrepGetaway,", preps(a))
@@ -553,11 +745,7 @@ crewOf2(a, b)
 local id = a:GetAttribute("Crew")
 fire(a, "RequestCrew", "Prep", "PrepCase")
 runUntil(clock() + 0.1)
-for _, step in ipairs(MISSIONS.ById.PrepCase.Steps) do
-	runUntil(clock() + 30)
-	moveTo(a, step.Pos.X, step.Pos.Z) moveTo(b, step.Pos.X, step.Pos.Z)
-	ticks(5, 1.2)
-end
+playPrep(a, b)
 runUntil(clock() + 1)
 check("Case the Joint done", a:GetAttribute("CrewPreps") == ",PrepCase,")
 fire(b, "RequestCrew", "Pause", true)
@@ -659,4 +847,167 @@ fire(a, "RequestCrew", "Call")
 runUntil(clock() + 0.1)
 check("nobody free: refused, nothing sent", lastSent(a, "Notify")[1] == "CrewCallNobody" and #sent(b, "CrewCall") == 0)
 check("no open call left behind", a:GetAttribute("CrewCallUntil") == nil)
+'
+
+# Hands-on preps (owner, Nov 7 2026: "a part that they hold and grab"): the two-person Pair step.
+scenario pair_job '
+local a, b = newMate(1), newMate(2)
+join(a) join(b)
+runUntil(1)
+crewOf2(a, b)
+fire(a, "RequestCrew", "Prep", "PrepCase")
+runUntil(clock() + 0.1)
+local st = decode(a:GetAttribute("Mission"))
+check("two spots at the depot gate", st.spots and #st.spots == 2 and st.spots[1].a == "Keep watch" and st.spots[2].a == "Plant bug")
+check("the world puts both out", #worldCalls("PairSpot") == 2)
+-- (the gate: VanSpot (-474, 1210) + 76 south; the spots 7 studs either side)
+check("spots either side of the gate", st.spots[1].x == -481 and st.spots[2].x == -467 and st.spots[1].z == 1286, st.spots[1].x)
+runUntil(clock() + 30)
+moveTo(a, st.spots[1].x, st.spots[1].z) moveTo(b, st.spots[1].x, st.spots[1].z)
+ticks(1)
+check("one hold counts", act(a, "Pair", 1) == true)
+local said = lastSent(b, "CrewJob", "Toast")[2]
+check("the crew is told who does the other one", said.Key == "PairWait" and said.Action == "Keep watch" and said.Other == "Plant bug")
+check("spot 1 shows done", decode(a:GetAttribute("Mission")).spots[1].d == true)
+moveTo(a, st.spots[2].x, st.spots[2].z)
+act(a, "Pair", 2)
+ticks(1)
+check("the same one doing both does not count", decode(a:GetAttribute("Mission")).step == 1
+	and lastSent(a, "CrewJob", "Toast")[2].Key == "PairTwo")
+-- B holds spot 2 alone, then A spot 1 nine seconds later: too far apart (PairSync 8).
+moveTo(b, st.spots[2].x, st.spots[2].z)
+act(b, "Pair", 2)
+runUntil(clock() + 9)
+ticks(1)
+check("a hold too old clears", decode(a:GetAttribute("Mission")).spots[2].d == false and lastSent(a, "CrewJob", "Toast")[2].Key == "PairSync")
+moveTo(a, st.spots[1].x, st.spots[1].z)
+act(a, "Pair", 1)
+runUntil(clock() + 6) -- (one starts the other once the first is done: within PairSync)
+act(b, "Pair", 2)
+ticks(2)
+st = decode(a:GetAttribute("Mission"))
+check("both within a few seconds: done", st.step == 2 and st.spots == nil)
+check("the spots go", #worldCalls("ClearPair") >= 1)
+check("the keycard is out at the reserve gate", st.items and #st.items == 1 and st.items[1].n == "Keycard" and st.items[1].x == -292)
+playStep(a, b)
+st = decode(a:GetAttribute("Mission"))
+check("keycard grabbed: copy it at the Hideout", st.step == 3 and worldCalls("Stand")[1][2] == "Copy keycard" and worldCalls("Stand")[1][3] == "Desk")
+playStep(a, b)
+check("Case the Joint done", a:GetAttribute("Mission") == nil and (a:GetAttribute("Cash") or 0) == 1500)
+runUntil(clock() + 1)
+check("marked done", preps(a) == ",PrepCase,")
+'
+
+scenario hands_rules '
+local a, b, c = newMate(1), newMate(2), newMate(3)
+join(a) join(b) join(c)
+runUntil(1)
+crewOf2(a, b)
+fire(a, "RequestCrew", "Prep", "PrepGear")
+runUntil(clock() + 0.1)
+local run = WORLD.last
+runUntil(clock() + 30)
+moveTo(a, 1000, 0) moveTo(b, 1000, 0) moveTo(c, 1000, 0)
+ticks(1)
+a:SetAttribute("Heat", 1)
+check("a wanted crewmate cannot grab", act(a, "Grab", 1) == false and lastSent(a, "CrewJob", "Toast")[2].Key == "Wanted")
+a:SetAttribute("Heat", 0)
+check("the world asks for someone not on the prep", run.onAct(c, "Grab", 1) == false and lastSent(c, "CrewJob", "Toast")[2].Key == "NotYourJob")
+check("a stranger never counts", decode(a:GetAttribute("Mission")).items[1].s == "g")
+check("an unknown thing does nothing", act(a, "Grab", 9) == false and act(a, "Pair", 1) == false)
+check("the crew can grab it", run.onAct(b, "Grab", 1) == true and b:GetAttribute("CrewCarry") == 1)
+fire(b, "RequestMission", "Quit")
+runUntil(clock() + 0.5)
+check("a QUIT clears the world, carried things too", run.cleared == true and b:GetAttribute("CrewCarry") == nil and b:GetAttribute("Mission") == nil)
+runUntil(clock() + 25)
+fire(a, "RequestCrew", "Prep", "PrepGear")
+runUntil(clock() + 0.5)
+check("a new run starts fresh", WORLD.last ~= run and #decode(a:GetAttribute("Mission")).items == 3)
+leave(a)
+check("leaving the game clears the world at once", WORLD.last.cleared == true and b:GetAttribute("Mission") == nil)
+'
+
+# Meeting up (owner, Nov 7 2026: "they both spawn in... and they have a car that they get in together").
+scenario meet_up_call '
+local VS = vehicleStub()
+local a, b = newMate(1), newMate(2)
+giveHumanoid(a) giveHumanoid(b)
+join(a) join(b)
+runUntil(1)
+moveTo(b, 800, 300)
+fire(a, "RequestCrew", "Call")
+runUntil(clock() + 0.1)
+fire(b, "RequestCrew", "CallJoin", 1)
+runUntil(clock() + 0.1)
+check("a crew of the two", a:GetAttribute("Crew") ~= nil and b:GetAttribute("Crew") == a:GetAttribute("Crew"))
+check("the host gets a car beside them, at the wheel", #VS.spawned == 1 and VS.spawned[1].p == a and VS.spawned[1].opts.Sit == true
+	and VS.spawned[1].opts.IgnoreCooldown == true and VS.spawned[1].opts.Auto == true and VS.spawned[1].id == "Palmetto")
+check("the host sits in it", a.Character.Humanoid.SeatPart == VS.cars[1].DriverSeat)
+local fadeOut = lastSent(b, "CrewMeet")
+check("the joiner fades out", fadeOut and fadeOut[1].Name == "P1" and not fadeOut[1].Done)
+runUntil(clock() + 1)
+check("the joiner rides with the host", b.Character.Humanoid.SeatPart == VS.cars[1].PassengerSeat)
+check("brought from far away to the car", (b.Character.HumanoidRootPart.Position - Vector3.new(18, 0, 0)).Magnitude < 1)
+check("and fades back in", lastSent(b, "CrewMeet")[1].Done == true)
+check("the joiner is told", lastSent(b, "CrewJob", "Toast")[2].Key == "MeetRide" and lastSent(b, "CrewJob", "Toast")[2].Name == "P1")
+check("the host is told", lastSent(a, "CrewJob", "Toast")[2].Key == "MetUp" and lastSent(a, "CrewJob", "Toast")[2].Ride == true)
+check("no prep yet", a:GetAttribute("Mission") == nil)
+runUntil(clock() + 6)
+ticks(1)
+local st = decode(a:GetAttribute("Mission"))
+check("a few seconds on, the first prep starts by itself", st and st.id == "PrepGear" and b:GetAttribute("Mission") ~= nil)
+check("the crew shows it running", a:GetAttribute("CrewPrepRun") == "PrepGear")
+'
+
+scenario meet_up_rules '
+local VS = vehicleStub()
+local a, b, c, d = newMate(1), newMate(2), newMate(3), newMate(4)
+for _, p in ipairs({ a, b, c, d }) do giveHumanoid(p) join(p) end
+runUntil(1)
+-- B is wanted: joins, but nobody moves and no car comes.
+moveTo(b, 900, 0)
+b:SetAttribute("Heat", 2)
+fire(a, "RequestCrew", "Invite", 2)
+fire(b, "RequestCrew", "Accept")
+runUntil(clock() + 1)
+check("wanted: still joins the crew", b:GetAttribute("Crew") ~= nil and b:GetAttribute("Crew") == a:GetAttribute("Crew"))
+check("wanted: not moved, no car", #VS.spawned == 0 and #sent(b, "CrewMeet") == 0 and b.Character.HumanoidRootPart.Position.X == 900)
+check("wanted: told to meet up", lastSent(b, "CrewJob", "Toast")[2].Key == "MeetLater")
+runUntil(clock() + 7)
+check("wanted: no prep starts by itself", a:GetAttribute("Mission") == nil)
+-- C rides in D car, then D crews C up (the ride, then CREW UP?): nobody moves, no new car, the prep starts.
+local car = VS.newCar(d, 2000, 0)
+moveTo(d, 2000, 0) moveTo(c, 2004, 0)
+d.Character.Humanoid.SeatPart = car.DriverSeat
+c.Character.Humanoid.SeatPart = car.PassengerSeat
+car.PassengerSeat.Occupant = c.Character.Humanoid
+fire(d, "RequestCrew", "Invite", 3)
+fire(c, "RequestCrew", "Accept")
+runUntil(clock() + 1)
+check("riding already: no new car, no fade", #VS.spawned == 0 and #sent(c, "CrewMeet") == 0)
+runUntil(clock() + 6)
+check("riding already: the prep starts by itself", decode(c:GetAttribute("Mission")) and decode(c:GetAttribute("Mission")).id == "PrepGear")
+'
+
+scenario meet_up_host_car '
+local VS = vehicleStub()
+local a, b, c = newMate(1), newMate(2), newMate(3)
+for _, p in ipairs({ a, b, c }) do giveHumanoid(p) join(p) end
+runUntil(1)
+-- A is on foot next to their own car; B is far away: no new car, B into its passenger seat.
+VS.newCar(a, 20, 0)
+moveTo(b, -700, 900)
+fire(a, "RequestCrew", "Invite", 2)
+fire(b, "RequestCrew", "Accept")
+runUntil(clock() + 1)
+check("the host car nearby is used", #VS.spawned == 0 and b.Character.Humanoid.SeatPart == VS.cars[1].PassengerSeat)
+check("faded in and out", #sent(b, "CrewMeet") == 2)
+-- C joins too (a third): the passenger seat is taken, so C stands by the host instead.
+moveTo(c, 600, -600)
+fire(a, "RequestCrew", "Invite", 3)
+fire(c, "RequestCrew", "Accept")
+runUntil(clock() + 1)
+check("a third with no seat left stands by the host", c.Character.Humanoid.SeatPart == nil
+	and (c.Character.HumanoidRootPart.Position - Vector3.new(4, 0, 2)).Magnitude < 1)
+check("and is told", lastSent(c, "CrewJob", "Toast")[2].Key == "MeetHere")
 '

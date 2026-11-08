@@ -98,57 +98,86 @@ Missions.List = {
 --   WithinSpeed, WithinSlack: the step must be done within (straight-line studs from the last goal /
 --     WithinSpeed + WithinSlack) seconds of it starting (the mission's clock jumps down to that), else
 --     the prep fails with TooSlow.
+-- Hands-on steps (owner, Nov 7 2026: "more like tasks based, not just drive here... have there be a part that
+-- they hold and grab"). Crew preps only; CrewTasks builds the things in the world, MissionService runs them:
+--   { Kind = "Pickup", Items = { { Name, Look } ... }, Points / Places, Radius, Text }
+--     a thing to grab at each point (Look: CrewTasks' models). A crew member holds its GRAB prompt once
+--     Together of the crew are within Radius of it, and carries it (in the hand, more on the back) until it's
+--     stashed. Done when every one is carried. A carrier who dies drops it where they fell: grab it again.
+--   { Kind = "Deliver", Place / Pos, Radius, Action, Look, Text }
+--     a stand there (Look "Crate" or "Desk") with an Action prompt: a carrier holds it to put in what they
+--     carry (Together of the crew there). Done when everything the prep's Pickup steps handed out is in.
+--   { Kind = "Pair", Place / Pos, Radius, Seconds, Spots = { { Action, Look, Offset }, { ... } }, Text }
+--     two prompts a few studs apart (Offset from Pos), each held Seconds: two different crew members must
+--     finish them within CrewJob.PairSync seconds of each other ("one keeps watch, one plants the bug").
 local BS = Heists.BigScore
 Missions.CrewJob = {
 	Name = "The Big Score",
 	Together = 2, -- crew members who must be at a goal at once (Studio, crew of one: 1)
 	Preps = { "PrepGear", "PrepCase", "PrepGetaway" }, -- the order the phone lists them in (any order works)
+	Reach = 12, -- studs from a thing to grab, a stand or a pair spot that its prompt counts from (server check)
+	PairSync = 8, -- seconds: a Pair step's two holds must finish this close together (6 was tight in the Studio test)
+	-- Meeting up (CrewService): a player who joins from an invite card or a crew call is brought to the one who
+	-- asked, the two get in one car, and AutoPrep seconds later the crew's next prep starts by itself.
+	MeetUp = { Range = 60, AutoPrep = 5, Fade = 0.45 },
 }
 Missions.CrewPreps = {
 	{
 		Id = "PrepGear",
 		Crew = true,
 		Name = "Gear Up",
-		Blurb = "Pick up the drill parts at Coast Arms, the Chop Shop and Spray & Go, then stash them at the Hideout.",
+		Blurb = "Grab the drill parts at Coast Arms, the Chop Shop and Spray & Go, then stash them in the Hideout crate.",
 		TimeLimit = 600,
 		Cash = 1500,
 		XP = 120,
 		Steps = {
-			{ Kind = "Collect", Radius = 40, Text = "Grab the drill parts: 3 stops",
+			{ Kind = "Pickup", Radius = 40, Text = "Grab the drill parts: 3 stops",
 				Places = { "Coast Arms", "Chop Shop", "Spray & Go" },
-				Points = { Vector3.new(1116, 0, 260), Vector3.new(-200, 0, 1862), Vector3.new(0, 0, -200) } },
-			{ Kind = "Goto", Place = "Hideout", Pos = BS.VanSpot, Radius = 40, Text = "Stash the gear at the Hideout" },
+				Points = { Vector3.new(1116, 0, 260), Vector3.new(-200, 0, 1862), Vector3.new(0, 0, -200) },
+				Items = { { Name = "Drill bits", Look = "Case" }, { Name = "Drill motor", Look = "Motor" },
+					{ Name = "Power pack", Look = "Battery" } } },
+			{ Kind = "Deliver", Place = "Hideout", Pos = BS.VanSpot, Radius = 40, Action = "Stash parts", Look = "Crate",
+				Text = "Stash the parts in the crate at the Hideout" },
 		},
 	},
 	{
 		Id = "PrepCase",
 		Crew = true,
 		Name = "Case the Joint",
-		Blurb = "Watch the armored van at the Ironclad depot, count the guards at the Gold Reserve, then clock the cops at Police HQ.",
+		Blurb = "Bug the Ironclad depot (one keeps watch, one plants it), swipe a guard's keycard at the Gold Reserve, then copy it at the Hideout.",
 		TimeLimit = 540,
 		Cash = 1500,
 		XP = 120,
 		Steps = {
 			-- (the depot's gate is on its south side, about 70 studs from where the van parks)
-			{ Kind = "Hold", Pos = BS.VanSpot + Vector3.new(0, 0, 76), Radius = 45, Seconds = 3,
-				Text = "Stop at the depot gate: watch the van" },
-			{ Kind = "Hold", Pos = BS.Street, Radius = 45, Seconds = 3, Text = "Stop at the Gold Reserve gate: count guards" },
-			{ Kind = "Goto", Place = "Police HQ", Pos = Vector3.new(0, 0, -200), Radius = 60,
-				Text = "Drive past Police HQ for the shift change" },
+			{ Kind = "Pair", Pos = BS.VanSpot + Vector3.new(0, 0, 76), Radius = 45, Seconds = 3,
+				Text = "Bug the depot: one keeps watch, one plants the bug",
+				Spots = { { Action = "Keep watch", Look = "Lookout", Offset = Vector3.new(-7, 0, 0) },
+					{ Action = "Plant bug", Look = "FuseBox", Offset = Vector3.new(7, 0, 0) } } },
+			{ Kind = "Pickup", Radius = 45, Text = "Swipe the guard's keycard at the Gold Reserve gate",
+				Points = { BS.Street }, Items = { { Name = "Keycard", Look = "Keycard" } } },
+			{ Kind = "Deliver", Place = "Hideout", Pos = BS.VanSpot, Radius = 40, Action = "Copy keycard", Look = "Desk",
+				Text = "Copy the keycard at the Hideout" },
 		},
 	},
 	{
 		Id = "PrepGetaway",
 		Crew = true,
 		Name = "Getaway Run",
-		Blurb = "Practice the escape: line up outside the Gold Reserve, then beat the clock to the Hideout.",
-		TimeLimit = 480,
+		Blurb = "Fit fake plates at Spray & Go (one holds, one screws), grab the getaway bag outside the Gold Reserve, then race it to the Hideout.",
+		TimeLimit = 600,
 		Cash = 1500,
 		XP = 120,
 		Steps = {
-			{ Kind = "Goto", Pos = BS.Street, Radius = 45, Text = "Line up outside the Gold Reserve gate" },
-			{ Kind = "Goto", Place = "Hideout", Pos = BS.VanSpot, Radius = 40, Text = "Race to the Hideout before the cops show!",
-				WithinSpeed = 40, WithinSlack = 30, TooSlow = "Too slow: the cops would've caught you" },
+			{ Kind = "Pair", Place = "Spray & Go", Pos = Vector3.new(0, 0, -200), Radius = 45, Seconds = 3,
+				Text = "Fake plates: one holds the plate, one screws it on",
+				Spots = { { Action = "Hold plate", Look = "Plate", Offset = Vector3.new(-5, 0, 0) },
+					{ Action = "Screw it on", Look = "Toolbox", Offset = Vector3.new(5, 0, 0) } } },
+			{ Kind = "Pickup", Radius = 45, Text = "Grab the getaway bag outside the Gold Reserve gate",
+				Points = { BS.Street }, Items = { { Name = "Getaway bag", Look = "Bag" } } },
+			{ Kind = "Deliver", Place = "Hideout", Pos = BS.VanSpot, Radius = 40, Action = "Stash bag", Look = "Crate",
+				Text = "Race the bag to the Hideout before the cops show!",
+				WithinSpeed = 40, WithinSlack = 40, TooSlow = "Too slow: the cops would've caught you" },
 		},
 	},
 }
