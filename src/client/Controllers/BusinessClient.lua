@@ -690,7 +690,8 @@ end
 function Fx.prompts()
 	local hum = myHum()
 	local seat = hum and hum.SeatPart
-	local car = seat and seat.Name == "DriverSeat" and seat.Parent
+	-- (the car or nil: never false, which a passenger seat gave, and car:GetAttribute then errored 4 times a second)
+	local car = (seat and seat.Name == "DriverSeat" and seat.Parent) or nil
 	local driving = car ~= nil and car:GetAttribute("OwnerUserId") == player.UserId and car:GetAttribute("Boat") ~= true
 	local shops = Workspace:FindFirstChild("Shops")
 	for _, m in ipairs(shops and shops:GetChildren() or {}) do
@@ -3175,7 +3176,8 @@ end
 function Rush.inOwnCar()
 	local hum = myHum()
 	local seat = hum and hum.SeatPart
-	local car = seat and seat.Name == "DriverSeat" and seat.Parent
+	-- (the car or nil: a passenger seat gave false, and car:GetAttribute errored)
+	local car = (seat and seat.Name == "DriverSeat" and seat.Parent) or nil
 	return car ~= nil and car:GetAttribute("OwnerUserId") == player.UserId and car:GetAttribute("Boat") ~= true
 end
 

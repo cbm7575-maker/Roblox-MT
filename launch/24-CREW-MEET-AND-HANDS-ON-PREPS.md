@@ -1,7 +1,8 @@
 # 24. Crew meet-up and hands-on heist preps (Nov 7-8, 2026)
 
-**Status:** **LIVE as v18** (published Nov 8 2026, 21:37:05 UTC, on top of v17). No server restart: running
-servers keep v17 until they empty, and new servers get v18.
+**Status:** **LIVE as v18** (published Nov 8 2026, 21:37:05 UTC, on top of v17), plus a one-line BusinessClient
+fix **LIVE as v19** (22:24:01 UTC, see the end). No server restart: running servers keep their version until they
+empty, and new servers get v19.
 
 ## What the owner asked for
 
@@ -127,11 +128,33 @@ Screenshots: `24-meet-up-riding.jpg`, `24-carrying-the-case.jpg`, `24-grab-promp
 - **Publish:** File > Publish gave "Publish succeeded for placeId 121416734424826 ... Add publish notes to v18". The
   games API shows `updated` 2026-11-08T21:37:05Z. Servers were not restarted.
 
+## v19: the passenger-seat warning (Nov 8, 22:24 UTC)
+
+The owner said "Yes, fix and publish" to the follow-up found in the v18 test.
+
+- **The bug:** `BusinessClient` warned 4 times a second for anyone in a passenger seat ("attempt to index boolean
+  with 'GetAttribute'", line 694). It had been live since v15.
+  - `local car = seat and seat.Name == "DriverSeat" and seat.Parent` gives `false` in a passenger seat, and the next
+    line calls `car:GetAttribute`.
+  - `Rush.inOwnCar` (line 3178, the rush job) had the same line.
+  - ActivityClient and RideClient use the same expression, but they check it safely.
+- **The fix:** both spots now read `(...) or nil`, so `car` is the car or nil, never false.
+- **Checks:**
+  - Compiles; luau-analyze shows no new warnings; businesses.sh 568 PASS, crew.sh 181 PASS.
+  - **Studio Play Solo** on a scratch copy with the full current tree: sat in the player's own Palmetto's passenger
+    seat for over 20 s. **0 BusinessClient warnings** (the old code gave 4 a second), 0 errors.
+- **Publish:**
+  - Opened the live place (version=18). BusinessClient matched git HEAD (SyncSha and 243,873 bytes), the v18
+    CrewTasks was there, and GetCanUndo was false.
+  - Synced only BusinessClient. The live DevSync is old and can't write a script over 200,000 characters, so a
+    temporary clone was patched to use ScriptEditorService:UpdateSourceAsync (the patch applied exactly once).
+  - Checked afterwards: the new SyncSha and 244,086 bytes.
+  - File > Publish: "Publish succeeded ... Add publish notes to v19". The games API shows `updated`
+    2026-11-08T22:24:01Z. No restart.
+
 ## Follow-ups (not done here)
 
-- **BusinessClient warning:** `BusinessClient:694` warns 4 times a second for any passenger
-  ("attempt to index boolean with 'GetAttribute'"). `car = seat and seat.Name == "DriverSeat" and seat.Parent` is
-  `false` in a passenger seat, and the next line calls `car:GetAttribute`. This was already live before this change;
-  the meet-up just seats passengers more often. A one-line fix: `car ~= nil and car ~= false`.
-- **Phone layout:** not looked at in Studio this time. The prompts are Roblox's own and tappable, and the step line
-  and toasts are the existing ones.
+- **Phone layout:** not looked at in Studio. The prompts are Roblox's own and tappable, and the step line and toasts
+  are the existing ones.
+- **The live place's ServerStorage.Tools.DevSync is the old version** (no UpdateSourceAsync). Until it's replaced
+  with tools/DevSync.lua, patch a clone as above for any script over 200k characters (BusinessClient).
