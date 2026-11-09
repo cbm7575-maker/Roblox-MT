@@ -436,7 +436,13 @@ local function onResult(r)
 	HUDController.Stamp(title, sub, C.Gold, "LUCKY WHEEL · YOU WON")
 	local big = r.Plan.Kind == "Car" and not r.Plan.Owned
 	sound(big and "Passed" or "CashIn", 1)
-	if r.NextAt then
+	local bonus = tonumber(r.Bonus) or 0
+	if bonus > 0 then
+		task.delay(4, function()
+			NotifyController.Show(bonus == 1 and "You have a bonus spin left (login streak): spin again!"
+				or ("You have " .. bonus .. " bonus spins left (login streak): spin again!"), C.Gold, "success")
+		end)
+	elseif r.NextAt then
 		task.delay(4, function()
 			NotifyController.Show("Next free spin in " .. untilText(r.NextAt - serverNow()) .. ".", C.Gold, "info")
 		end)

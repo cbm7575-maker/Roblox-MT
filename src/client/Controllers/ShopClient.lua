@@ -1,5 +1,5 @@
 -- ShopClient (ModuleScript, StarterPlayerScripts.Controllers.ShopClient)
--- Purchase moments (pass unlocked, cash pack delivered), the daily streak reward, the [VIP] chat tag
+-- Purchase moments (pass unlocked, cash pack delivered), the [VIP] chat tag
 -- for any player with the VIP pass (TextChatService prefix, local display only), and a one-time toast
 -- when the shop is free for you (player attribute "ShopFree" = "Studio" | "Owner", set by ShopService:
 -- Studio tests, and the game's owner in a live server). It builds no screens
@@ -52,15 +52,7 @@ function ShopClient.Init()
 	Remotes.OnClient("CashPackGranted", function(cash)
 		HUDController.Stamp("CASH DELIVERED", "+" .. HUDController.Money(cash), C.Cash)
 	end)
-	Remotes.OnClient("DailyReward", function(r)
-		task.wait(1.5)
-		HUDController.Stamp("DAY " .. r.Streak .. " STREAK", "+" .. HUDController.Money(r.Cash)
-			.. "  ·  come back tomorrow for " .. HUDController.Money(r.Next), C.Gold)
-		if r.Unlocked then
-			task.wait(3)
-			NotifyController.Show("7-day streak! Streak Sunset paint unlocked in your Garage.", C.Gold, "success")
-		end
-	end)
+	-- (The daily streak reward's card moved to DailyClient, Nov 9 2026.)
 	TextChatService.OnIncomingMessage = function(message)
 		local props = Instance.new("TextChatMessageProperties")
 		local source = message.TextSource

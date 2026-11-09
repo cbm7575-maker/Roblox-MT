@@ -81,7 +81,8 @@
 --   GOALS     both ranks with their XP bars and next unlock, and today's challenges
 --   EMPIRE    player businesses (BusinessClient; only while BusinessesOn): your Empire rank, your businesses
 --             (register, GPS, COLLECT from the phone at Empire 5+), businesses for sale, and coming soon
---   SPIN      the daily spin (SpinClient): today's spin or when the next comes, the 2X boosts running, and
+--   SPIN      the login streak (DailyClient: today's day, tomorrow's reward, SEE THE WEEK) and the daily spin
+--             (SpinClient): today's spin or when the next comes, the bonus spins, the 2X boosts running, and
 --             GPS TO THE LUCKY WHEEL (the wheel downtown where the spin happens; sets the GPS and puts the
 --             phone away). A red dot on the tile while a spin is ready.
 --   CREW      INVITE FRIENDS (Roblox's own invite pop-up, hidden when Roblox says this player can't send
@@ -2252,9 +2253,31 @@ function PAGES.Spin()
 		local h, m = seconds // 3600, (seconds % 3600) // 60
 		return h > 0 and (h .. "h " .. m .. "m") or (math.max(m, 1) .. "m")
 	end
+	-- The login streak (DailyClient, Config.Daily): today's day and tomorrow's reward, and the week's card.
+	local okDaily, DailyClient = pcall(function()
+		return require(script.Parent:WaitForChild("DailyClient", 2))
+	end)
+	local daily = okDaily and type(DailyClient) == "table" and type(DailyClient.Status) == "function" and DailyClient.Status() or nil
+	if daily and daily.Streak then
+		local Daily = require(ReplicatedStorage.Shared.Config.Daily)
+		W.item(s, {
+			Name = "Streak", Order = -3,
+			Title = "LOGIN STREAK  ·  DAY " .. daily.Streak, TitleColor = C.Gold,
+			Sub = "Tomorrow: +" .. Daily.Words(daily.Next) .. ". Skip more than a day and it starts over.",
+			Meta = daily.NextIn and ("NEXT REWARD IN " .. hm(daily.NextIn)) or nil, MetaColor = C.Gold,
+		})
+		local week = W.button(s, "SeeWeek", "SEE THE WEEK", "Quiet", function()
+			PhoneUI.Close()
+			DailyClient.ShowCard()
+		end)
+		week.Size = UDim2.new(1, 0, 0, touchHeight())
+		week.LayoutOrder = -2
+	end
+	local bonus = tonumber(player:GetAttribute("SpinBonus")) or 0
+	local readyTitle = bonus > 0 and ("YOUR SPIN IS READY  ·  " .. bonus .. " BONUS") or "YOUR FREE SPIN IS READY"
 	W.item(s, {
 		Name = "Today", Order = 0,
-		Title = st.Ready and "YOUR FREE SPIN IS READY" or "TODAY'S SPIN IS USED", TitleColor = st.Ready and C.Gold or C.Text,
+		Title = st.Ready and readyTitle or "TODAY'S SPIN IS USED", TitleColor = st.Ready and C.Gold or C.Text,
 		Sub = st.Ready and "Spin the Lucky Wheel downtown: cash, 2X CASH, 2X XP, a free gun, or a 1 in 18 shot at a supercar."
 			or ("Next free spin in " .. hm(st.NextIn) .. ". Anyone can watch the wheel downtown."),
 		Meta = "LUCKY WHEEL  ·  " .. GPSClient.FormatDistance(GPSClient.Distance(SpinClient.WheelPos()) or 0),

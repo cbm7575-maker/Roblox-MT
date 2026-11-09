@@ -16,15 +16,17 @@
 --   day = the UTC day of the last spin (Config.Spin.Day),
 --   pending = { slice = i, plan = {...} } while a prize is still to be paid (the wheel is turning),
 --   boosts = { Cash = seconds left, XP = seconds left } (play time: only counts down while online),
---   n = spins so far, cars = times the car slice came up }.
+--   n = spins so far, cars = times the car slice came up,
+--   bonus = bonus spins waiting (the login streak's extras, Config.Daily: used after the day's free spin) }.
 -- Player attributes:
---   SpinReady       true while today's spin is unused (only once the save has loaded)
+--   SpinReady       true while today's spin is unused or a bonus spin is waiting (only once the save has loaded)
 --   SpinNextAt      when the next spin unlocks (unix seconds), while SpinReady is false
+--   SpinBonus       bonus spins waiting (nil when none)
 --   BoostCashUntil  when 2X CASH ends (Workspace:GetServerTimeNow() seconds); nil when it's off
 --   BoostXPUntil    the same for 2X XP
 --   (EconomyService and ProgressService read the two Until attributes to double what they pay.)
 -- Remotes: SpinResult (server -> the spinner): { Slice = i, Plan = { Kind, Cash?, Car?, CarName?, Gun?,
---   GunName?, Boost?, Minutes?, Owned? }, StopAt = server time the wheel stops, NextAt }. The prize is paid
+--   GunName?, Boost?, Minutes?, Owned? }, StopAt = server time the wheel stops, NextAt, Bonus = bonus spins left }. The prize is paid
 --   when the wheel stops (so the HUD's cash doesn't give it away). Today is marked used, and the pending prize
 --   saved, before the wheel moves: leaving mid-spin pays it on the next join.
 --   Refusals are Notify keys: SpinLoading, SpinUsed, WheelBusy, WheelTooFar.
@@ -118,11 +120,39 @@ local function today()
 	return Spin.Day(os.time())
 end
 
+local function bonusLeft(s)
+	return math.max(0, math.floor(tonumber(s.bonus) or 0))
+end
+
 local function publishReady(player, data)
 	local s = record(data)
-	local ready = type(s.day) ~= "number" or s.day < today()
+	local bonus = bonusLeft(s)
+	local ready = type(s.day) ~= "number" or s.day < today() or bonus > 0
 	player:SetAttribute("SpinReady", ready)
 	player:SetAttribute("SpinNextAt", (not ready) and Spin.NextAt(os.time()) or nil)
+	player:SetAttribute("SpinBonus", bonus > 0 and bonus or nil)
+end
+
+-- The login streak's extras (DailyService, Config.Daily): `n` bonus spins at the Lucky Wheel, kept in the
+-- save until used (after the day's free spin).
+function SpinService.AddBonusSpins(player, data, n)
+	n = math.floor(tonumber(n) or 0)
+	if n <= 0 or type(data) ~= "table" then
+		return
+	end
+	local s = record(data)
+	s.bonus = bonusLeft(s) + n
+	publishReady(player, data)
+end
+
+-- The login streak's 2X boosts: `minutes` of play time added to a 2X CASH / 2X XP boost.
+function SpinService.GrantBoost(player, data, kind, minutes)
+	minutes = tonumber(minutes) or 0
+	if (kind ~= "Cash" and kind ~= "XP") or minutes <= 0 or type(data) ~= "table" then
+		return
+	end
+	addBoost(player, data, kind, minutes * 60)
+	Telemetry.Custom(player, "Streak_Boost" .. kind, minutes)
 end
 
 -- What a slice gives this player right now (a dry run: nothing is paid).
@@ -246,7 +276,8 @@ function SpinService.SpinAt(player)
 		return false
 	end
 	local s = record(data)
-	if (type(s.day) == "number" and s.day >= today()) or s.pending ~= nil then
+	local dailyUsed = type(s.day) == "number" and s.day >= today()
+	if (dailyUsed and bonusLeft(s) <= 0) or s.pending ~= nil then
 		notify:FireClient(player, "SpinUsed")
 		publishReady(player, data)
 		return false
@@ -262,6 +293,13 @@ function SpinService.SpinAt(player)
 	local index = forced or rng:NextInteger(1, #Spin.Slices)
 	forced = nil
 	local plan = planFor(player, Spin.Slices[index])
+	if dailyUsed then
+		s.bonus = bonusLeft(s) - 1 -- the day's free spin first, then a waiting bonus spin
+		if s.bonus <= 0 then
+			s.bonus = nil
+		end
+		Telemetry.Custom(player, "Spin_Bonus", 1)
+	end
 	s.day = today()
 	s.n = (s.n or 0) + 1
 	s.pending = { slice = index, plan = plan }
@@ -281,7 +319,8 @@ function SpinService.SpinAt(player)
 	mirror("SpinUser", player.UserId)
 	mirror("SpinStart", start) -- (last: clients start the turn when this one changes)
 	setStatus(string.upper(player.DisplayName) .. " IS SPINNING...")
-	result:FireClient(player, { Slice = index, Plan = plan, StopAt = start + Spin.Seconds, NextAt = Spin.NextAt(os.time()) })
+	result:FireClient(player, { Slice = index, Plan = plan, StopAt = start + Spin.Seconds, NextAt = Spin.NextAt(os.time()),
+		Bonus = bonusLeft(s) })
 
 	task.delay(W.Lead + Spin.Seconds, function()
 		wheel.angle = to % 360
