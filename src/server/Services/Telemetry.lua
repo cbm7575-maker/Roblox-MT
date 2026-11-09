@@ -3,6 +3,8 @@
 -- must never break gameplay.
 --   Telemetry.Economy(player, amount, balance, reason)  cash in (+) or out (-), from EconomyService
 --   Telemetry.Funnel(player, step, name)                 onboarding funnel (first session)
+--   Telemetry.FunnelStep(player, funnel, session, step, name)  a recurring funnel's step (its own chart
+--                                                        under Analytics > Funnels, one run per session id)
 --   Telemetry.Custom(player, name, value)                gameplay events (heists, arrests, escapes...)
 -- Economy transaction types come from the reason prefix (see TYPES).
 -- Roblox keeps 100 custom event names per experience and groups economy item SKUs past 100 as
@@ -57,6 +59,12 @@ end
 function Telemetry.Funnel(player, step, name)
 	pcall(function()
 		AnalyticsService:LogOnboardingFunnelStepEvent(player, step, name)
+	end)
+end
+
+function Telemetry.FunnelStep(player, funnel, session, step, name)
+	pcall(function()
+		AnalyticsService:LogFunnelStepEvent(player, funnel, session, step, name)
 	end)
 end
 

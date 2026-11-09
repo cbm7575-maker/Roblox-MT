@@ -62,6 +62,9 @@
 --     Rob prompt (they're told once, near the store, to point the gun at the clerk); without a gun it
 --     shows as before. The clerk's pose (model attribute Pose: HandsUp, Cower) is played here with
 --     PoseClient, on every device.
+--   * Rookie robbery (Config.Tutorial.RookieRob): until this player has banked a first bag, and while the
+--     bag is empty, every tier-1 site is open for them alone: its sign reads OPEN, its Rob prompt shows
+--     (and the clerk can be held up), with the shorter rookie hold. The server checks the same rule.
 --   * Club Nova's drill (Drill): its Rob prompt reads "Set the drill", then "Drilling 0:18" (locked) for
 --     whoever set it and "Drill running" for everyone else, then "Grab the cash" for the driller.
 --   HeistClient.NearestRob(pos, range)  studs from pos to the nearest Rob point or prep panel within
@@ -78,6 +81,7 @@ local Workspace = game:GetService("Workspace")
 local Heists = require(ReplicatedStorage.Shared.Config.Heists)
 local Progression = require(ReplicatedStorage.Shared.Config.Progression)
 local Vehicles = require(ReplicatedStorage.Shared.Config.Vehicles)
+local Tutorial = require(ReplicatedStorage.Shared.Config.Tutorial)
 local Remotes = require(ReplicatedStorage.Shared.Util.Remotes)
 local Theme = require(ReplicatedStorage.Shared.Util.Theme)
 local HUDController = require(script.Parent:WaitForChild("HUDController"))
@@ -522,11 +526,13 @@ local function drillLabel(site, def)
 end
 
 local function updateSite(site, collect)
-	local robbable = site:GetAttribute("Robbable") == true
-	local civilian = player:GetAttribute("Side") == "Civilian"
-	local need, rank = rankLock(site)
 	local typeId = site:GetAttribute("HeistId")
 	local def = Heists.Types[typeId]
+	-- A rookie's first robbery: every tier-1 site is open for them alone (Tutorial.RookieRob).
+	local rookie = def ~= nil and not def.Drill and Tutorial.CanRookieRob(player, def.Tier)
+	local robbable = site:GetAttribute("Robbable") == true or rookie
+	local civilian = player:GetAttribute("Side") == "Civilian"
+	local need, rank = rankLock(site)
 	local t = now()
 	-- A prep step (fuse box, alarm panel) that we or our crew still have to do before the vault works.
 	-- (Under a rank lock that one says it all: the rank comes first, on the server too.)
@@ -547,6 +553,8 @@ local function updateSite(site, collect)
 			if not text and name == "RobPrompt" and def and def.Drill then
 				text, stageHold = drillLabel(site, def)
 				stageHold = (stageHold ~= nil and stageHold > 0) and stageHold or nil
+			elseif not text and name == "RobPrompt" and rookie then
+				stageHold = math.min(def.Hold, Tutorial.RookieRob.Hold) -- (the server allows the same)
 			end
 			labelPrompt(prompt, text, stageHold, object)
 			-- A locked prompt shows even while the site is closed, so walking up to it tells you why.
@@ -1169,7 +1177,10 @@ function HeistClient.Init()
 						end
 						local site = siteFolder:FindFirstChild(siteName)
 						local head = m:FindFirstChild("Head")
-						if site and head and site:GetAttribute("Robbable") == true and m:GetAttribute("NPCKind") == "Clerk"
+						local siteDef = site and Heists.Types[site:GetAttribute("HeistId")]
+						local open = site and (site:GetAttribute("Robbable") == true
+							or (siteDef ~= nil and Tutorial.CanRookieRob(player, siteDef.Tier))) -- (a rookie's store)
+						if open and head and m:GetAttribute("NPCKind") == "Clerk"
 							and player:GetAttribute("Side") == "Civilian" then
 							-- (the angle from the crosshair's line, the distance from the gun)
 							local to = head.Position - (from or head.Position)

@@ -36,6 +36,16 @@ Tutorial.Steps = {
 -- A rookie arrested before banking stays a rookie, so the next try is just as gentle.
 Tutorial.Rookie = { MaxStars = 2, SpeedScale = 0.7, HeadStart = 20, HollowAfter = 5, EscapeAfter = 30, NoTaser = true }
 
+-- Rookie robbery (Nov 8 2026, after the first ads: of the new players who got into a car, 2 in 3 left
+-- before robbing anything). Stores take turns being open (Heists.OpenCount types at a time, 4-6 minutes
+-- each, then 2-2.5 minutes shut after every robbery), so a newcomer could be routed across town or reach a
+-- store that had just shut. Until a citizen has banked a first bag, and while their bag is empty, every
+-- site up to MaxTier (Glow Mart, Fuel Stop, the ATMs) is open for them alone, with a Hold of at most this
+-- many seconds. Nothing changes for anyone else: a shut store stays shut for them, and a rookie's robbery
+-- of a shut store doesn't start its cooldown. HeistService checks it, HeistClient shows it (OPEN sign,
+-- prompt, hold) and TutorialClient routes to the nearest one.
+Tutorial.RookieRob = { MaxTier = 1, Hold = 5 }
+
 local BANK_STEP = 0
 for i, step in ipairs(Tutorial.Steps) do
 	if step.Id == "bank" then
@@ -54,6 +64,23 @@ function Tutorial.IsRookie(player)
 		return false
 	end
 	return (player:GetAttribute("Heat") or 0) <= Tutorial.Rookie.MaxStars
+end
+
+-- True when this player may rob a site of this tier as a rookie (Tutorial.RookieRob): a citizen who
+-- hasn't banked a first bag and has nothing in their bag. Leave tier out to ask about the player alone.
+-- An arrest empties the bag, so a rookie caught before banking gets the same easy store again.
+function Tutorial.CanRookieRob(player, tier)
+	if tier ~= nil and tier > Tutorial.RookieRob.MaxTier then
+		return false
+	end
+	local step = player:GetAttribute("TutorialStep")
+	if type(step) ~= "number" or step >= BANK_STEP then
+		return false
+	end
+	if player:GetAttribute("Side") ~= "Civilian" then
+		return false
+	end
+	return (player:GetAttribute("Carried") or 0) <= 0
 end
 
 return Tutorial

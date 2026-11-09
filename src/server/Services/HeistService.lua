@@ -7,6 +7,11 @@
 --   * Robbing: hold the Rob prompt for the type's Hold time. The server times the hold itself
 --     (PromptButtonHoldBegan -> Triggered), checks side, distance and on-foot, then pays into the bag.
 --   * Each robbed site cools down; the alarm reaches cops after the head start (Heists.AlarmDelay).
+--   * Rookie robbery (Config.Tutorial.RookieRob / CanRookieRob): a citizen who hasn't banked a first bag
+--     and has an empty bag may rob any tier-1 site, open or shut, with the shorter rookie hold (at the till
+--     or at a clerk's gunpoint). A shut site robbed that way stays exactly as it was for everyone else
+--     (onRobbed's `personal`: no cooldown, no prep or LastRobbedBy change); an open one is robbed as usual.
+--     Each hold a rookie starts is noted for TutorialService's FirstRob funnel.
 --   * Rank-locked heists (MinRank, e.g. the bank): the rank check comes first on both prompts, so a
 --     low-rank player who taps the "Rank 3 needed" prompt (HeistClient relabels it) is told why.
 --   * Prep (bank fuse box, yacht panel): the main hold only has to START inside the prep window, so
@@ -58,6 +63,7 @@ local Workspace = game:GetService("Workspace")
 local Combat = require(ReplicatedStorage.Shared.Config.Combat)
 local Heists = require(ReplicatedStorage.Shared.Config.Heists)
 local Shop = require(ReplicatedStorage.Shared.Config.Shop)
+local Tutorial = require(ReplicatedStorage.Shared.Config.Tutorial)
 local Remotes = require(ReplicatedStorage.Shared.Util.Remotes)
 local RateLimit = require(ReplicatedStorage.Shared.Util.RateLimit)
 local EconomyService = require(ServerScriptService.Services.EconomyService)
@@ -96,6 +102,14 @@ end
 local function siteRobbable(site)
 	local typeId = site:GetAttribute("HeistId")
 	return typeOpen[typeId] == true and now() >= (site:GetAttribute("ReopenAt") or 0)
+end
+
+-- A rookie began a robbery (a Rob hold, or a clerk filling their bag): one step of TutorialService's
+-- FirstRob funnel. Required here, not at the top: TutorialService needn't load before this file.
+local function noteRookieHold(player)
+	pcall(function()
+		require(ServerScriptService.Services.TutorialService).FirstRobNote(player, "Holding")
+	end)
 end
 
 -- True while this site's prep was done by this player or their crew and its window is still open.
@@ -247,7 +261,9 @@ local function payCut(mate, robber, typeId, def, cut, crewSize)
 	})
 end
 
-local function onRobbed(player, site, def, mult)
+-- personal: a rookie robbing a site that's shut for everyone else (Tutorial.RookieRob): they're paid as
+-- usual, but the site is left as it was (no cooldown, no prep or LastRobbedBy change).
+local function onRobbed(player, site, def, mult, personal)
 	local typeId = site:GetAttribute("HeistId")
 	local big = def.Tier == Heists.BigTier
 	local payout = math.floor(rng:NextInteger(def.Payout[1], def.Payout[2]) * (mult or 1)) -- (mult: a clerk's bonus)
@@ -279,12 +295,14 @@ local function onRobbed(player, site, def, mult)
 	if big then
 		creditBigHeist(player, typeId, helpers)
 	end
-	site:SetAttribute("ReopenAt", now() + def.Cooldown)
-	site:SetAttribute("PrepUntil", nil)
-	site:SetAttribute("PrepBy", nil)
-	site:SetAttribute("PrepLockUntil", nil)
-	site:SetAttribute("LastRobbedBy", player.UserId)
-	refreshSite(site)
+	if not personal then
+		site:SetAttribute("ReopenAt", now() + def.Cooldown)
+		site:SetAttribute("PrepUntil", nil)
+		site:SetAttribute("PrepBy", nil)
+		site:SetAttribute("PrepLockUntil", nil)
+		site:SetAttribute("LastRobbedBy", player.UserId)
+		refreshSite(site)
+	end
 	heistResult:FireClient(player, {
 		Type = typeId, Payout = fits, BagFull = fits < payout, LeftBehind = payout - fits,
 		Wanted = (player:GetAttribute("Heat") or 0) > 0, Crew = crewSize,
@@ -455,7 +473,12 @@ local function onStoreRob(player, site)
 	if not cfg or not c or c.state ~= "Idle" or not c.model.Parent then
 		return
 	end
-	if player:GetAttribute("Side") ~= "Civilian" or not siteRobbable(site) then
+	if player:GetAttribute("Side") ~= "Civilian" then
+		return
+	end
+	-- A store that's shut for everyone else can still be a rookie's (Tutorial.RookieRob): theirs alone.
+	local personal = not siteRobbable(site)
+	if personal and not Tutorial.CanRookieRob(player, def.Tier) then
 		return
 	end
 	if def.MinRank and (player:GetAttribute("CivRank") or 1) < def.MinRank then
@@ -484,6 +507,9 @@ local function onStoreRob(player, site)
 	clerkPose(c, "HandsUp")
 	clerkSay(c, "Okay, okay! Don't shoot!", 2.5)
 	storeRob:FireClient(player, "Start", site, cfg.Fill)
+	if Tutorial.CanRookieRob(player) then
+		noteRookieHold(player)
+	end
 	if rng:NextNumber() < (cfg.Alarm or 0) then
 		alarmNow(site) -- (the silent alarm under the counter)
 	end
@@ -522,8 +548,9 @@ local function onStoreRob(player, site)
 				half = true
 				clerkSay(c, "Here, here! It's all there!", 2)
 			end
-			if p >= 1 and now() < (site:GetAttribute("ReopenAt") or 0) then
+			if p >= 1 and not personal and now() < (site:GetAttribute("ReopenAt") or 0) then
 				-- Somebody emptied the till while the bag was being filled (a crewmate holding Rob): nothing left.
+				-- (A rookie's store that was shut for everyone else is theirs alone: never emptied under them.)
 				c.state, c.robber = "Idle", nil
 				clerkPose(c, nil)
 				storeRob:FireClient(player, "Fail", site, "StoreRobOff")
@@ -531,7 +558,7 @@ local function onStoreRob(player, site)
 			end
 			if p >= 1 then
 				c.state, c.robber = "Idle", nil
-				onRobbed(player, site, def, 1 + (cfg.Bonus or 0))
+				onRobbed(player, site, def, 1 + (cfg.Bonus or 0), personal)
 				storeRob:FireClient(player, "Done", site)
 				clerkPose(c, "Cower")
 				task.delay(6, function()
@@ -714,6 +741,9 @@ local function hookSite(site)
 		holdStart[site][player.UserId] = {
 			t = os.clock(), prepOk = def.Prep ~= nil and prepIsMine(site, player), open = siteRobbable(site),
 		}
+		if Tutorial.CanRookieRob(player) then
+			noteRookieHold(player)
+		end
 	end)
 	prompt.PromptButtonHoldEnded:Connect(function(player)
 		task.defer(function()
@@ -755,10 +785,13 @@ local function hookSite(site)
 			return
 		end
 		-- The server times the hold; a client that skips it gets nothing. (Club Nova: setting the drill, or
-		-- emptying the safe once it's done, each has its own time.)
+		-- emptying the safe once it's done, each has its own time. A rookie's tier-1 hold is shorter:
+		-- Tutorial.RookieRob, which HeistClient puts on the prompt for them.)
 		local drill = def.Drill
 		local grabbing = drill ~= nil and drillReady(site, player)
-		local need = drill and (grabbing and drill.Grab or drill.Start) or def.Hold
+		local rookie = not drill and Tutorial.CanRookieRob(player, def.Tier)
+		local need = drill and (grabbing and drill.Grab or drill.Start)
+			or (rookie and math.min(def.Hold, Tutorial.RookieRob.Hold) or def.Hold)
 		if not began or os.clock() - began.t < need - 0.4 then
 			return
 		end
@@ -783,10 +816,12 @@ local function hookSite(site)
 			return
 		end
 		local openAtStart = began.open and os.clock() - began.t < def.Hold + 5
-		if not siteRobbable(site) and not (openAtStart and now() >= (site:GetAttribute("ReopenAt") or 0)) then
+		local shut = not siteRobbable(site) and not (openAtStart and now() >= (site:GetAttribute("ReopenAt") or 0))
+		-- Shut for everyone else, but a rookie's to rob all the same (and left as it was: `personal`).
+		if shut and not rookie then
 			return
 		end
-		onRobbed(player, site, def)
+		onRobbed(player, site, def, nil, shut)
 	end)
 	site:SetAttribute("HeistType", typeId)
 	site:SetAttribute("Display", def.Display)

@@ -38,12 +38,17 @@
 -- caption uses the Subtitle zone (guide line only; ScreenGui "ImpactFx", frame "KnockedDown"), while
 -- InteractClient's "Get out first" hint overlaps it, during races, job shifts and missions (their own
 -- banners), and on the first-join title screen (local attribute TitleScreen, set by TeamUI).
+-- The guide line also steps aside while a ROB button (a heist's Rob or prep prompt) is on screen
+-- (ProximityPromptService's PromptShown / PromptHidden): the prompt lands in the same lower middle of the
+-- screen, and on a phone the line's SHOW ME sat right on top of the ROB button (Studio test, Nov 8 2026:
+-- launch/25).
 -- SHOW ME never picks a heist the player's rank can't rob yet (the bank needs rank 3), nor a bigger
 -- heist than the step asks for (Config ShowTier / ShowMaxTier).
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local HttpService = game:GetService("HttpService")
+local ProximityPromptService = game:GetService("ProximityPromptService")
 local TextService = game:GetService("TextService")
 local UserInputService = game:GetService("UserInputService")
 
@@ -109,6 +114,8 @@ local lastMode -- the input mode the key caps were drawn for
 local lastSent = 0
 local skipArmedAt = -math.huge
 local Objective -- ObjectiveClient, once found (loaded without blocking Init)
+local robShown = {} -- [prompt] = true while a heist's Rob / prep prompt is on screen (robPromptUp)
+local ROB_PROMPTS = { RobPrompt = true, PrepPrompt = true } -- (HeistService's names)
 local introduced = {} -- [def] = true: steps and goals already routed / told in a toast this session
 
 local money = HUDController.Money
@@ -240,7 +247,8 @@ local function nearestPlace(here, match)
 end
 
 -- The nearest heist that's open right now, of tier lo to hi, that the player's rank allows (never send
--- a new player to a heist they don't have the rank for).
+-- a new player to a heist they don't have the rank for). A rookie's tier-1 sites are always open for them
+-- (Tutorial.RookieRob), so their first robbery is the nearest store or ATM, never one across town.
 local function nearestHeist(here, lo, hi)
 	local open = {}
 	for id in string.gmatch(ReplicatedStorage:GetAttribute("OpenHeists") or "", "[^,]+") do
@@ -248,8 +256,9 @@ local function nearestHeist(here, lo, hi)
 	end
 	local locked = lockedHeistNames()
 	return nearestPlace(here, function(p)
-		local tier = TIER_BY_NAME[p.n] or 1
-		return p.c == "Heist" and open[p.id] == true and not locked[p.n] and tier >= lo and tier <= hi
+		local tier = TIER_BY_NAME[p.n] or 1 -- (an ATM's map name is "ATM #2": tier 1)
+		local openForMe = open[p.id] == true or Tutorial.CanRookieRob(player, tier)
+		return p.c == "Heist" and openForMe and not locked[p.n] and tier >= lo and tier <= hi
 	end)
 end
 
@@ -552,6 +561,19 @@ local function knockCaptionUp()
 	return caption ~= nil and caption:IsA("GuiObject") and caption.Visible
 end
 
+-- Is a heist's ROB button on screen right now? Exactly what Roblox shows (in reach, enabled, the closest
+-- prompt; never while seated: PromptGate), so the line never hides with no button there to take its place.
+-- (A prompt destroyed while it showed is dropped here, in case its PromptHidden never came.)
+local function robPromptUp()
+	for prompt in pairs(robShown) do
+		if prompt.Parent and prompt.Enabled then
+			return true
+		end
+		robShown[prompt] = nil
+	end
+	return false
+end
+
 local function refresh()
 	local goal = currentGoal()
 	-- Where the goal's SHOW ME points, for ObjectiveClient's strip (it covers this pill and its button).
@@ -627,11 +649,13 @@ local function refresh()
 	-- AbsolutePosition starts under the top bar whatever IgnoreGuiInset says, so the strip is measured
 	-- from our own ScreenGui's corner. The KNOCKED DOWN caption takes the guide line's Subtitle zone for
 	-- a moment. "Get out first" is the more urgent instruction (it comes up right as goal 1 says to go JACK).
+	-- Standing at a ROB button, the button itself is the instruction: the guide line (bottom centre, where
+	-- the prompt lands) steps aside so nothing covers it.
 	local stampTop = HUDController.StampTop and HUDController.StampTop()
 	local covered = look == "goal" and stampTop ~= nil
 		and stampTop < pill.AbsolutePosition.Y - gui.AbsolutePosition.Y + pill.AbsoluteSize.Y
 	pill.Visible = player:GetAttribute("HasPicked") == true and not busy and not objective and not covered
-		and not (look == "guide" and knockCaptionUp()) and not exitHintOver()
+		and not (look == "guide" and (knockCaptionUp() or robPromptUp())) and not exitHintOver()
 
 	-- The first time a step or goal is on screen, not under the phone (once a session): words cut off by
 	-- the two lines (small phones) are said whole in a toast, and a guide step routes the GPS the way
@@ -751,6 +775,19 @@ function TutorialClient.Init()
 	end
 	task.spawn(watchPhone)
 	task.spawn(watchCaption)
+	-- A ROB button coming on screen or going: the guide line steps aside / comes back at once.
+	ProximityPromptService.PromptShown:Connect(function(prompt)
+		if ROB_PROMPTS[prompt.Name] then
+			robShown[prompt] = true
+			refresh()
+		end
+	end)
+	ProximityPromptService.PromptHidden:Connect(function(prompt)
+		if robShown[prompt] then
+			robShown[prompt] = nil
+			refresh()
+		end
+	end)
 	-- Hide while an objective strip shows (never wait forever for it inside Init).
 	task.spawn(function()
 		local module = script.Parent:WaitForChild("ObjectiveClient", 10)
