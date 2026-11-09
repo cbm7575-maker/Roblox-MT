@@ -1,6 +1,6 @@
 # 26 · Login streak calendar ("come back tomorrow")
 
-Built Nov 9 2026 after the post-ads analytics read. Not live yet: it goes live only on the owner's say-so.
+Built Nov 9 2026 after the post-ads analytics read. **LIVE as v21** (Nov 9 2026, 17:32:55 UTC), commit ec82cfa, published on the owner's go-ahead ("commit everything properly to GitHub and to the Roblox app").
 
 ## Why
 
@@ -89,3 +89,14 @@ Nothing here is sold for Robux. The streak and the spins are free for everyone, 
 - Day 1 retention (Creator Hub > Retention, cohorts) against the Nov 4-7 cohorts (0.9-3.9%).
 - `Streak_Day` counts by value: how many players reach days 2, 3 and 7.
 - Whether the 2X CASH and bonus-spin extras move the economy (the `spinboost:*` and `spin:*` economy events).
+
+## Launch: live as v21
+
+- **Method:**
+  - Opened the live place with EditPlace; it loaded version 20.
+  - A read-only DevSync check against the v20 commit (ce7d5f8): every script's SyncSha matched except DesignDoc, which has always differed on purpose.
+  - Synced only the 8 changed scripts from ec82cfa. Daily and DailyClient were new; ClientMain, PhoneUI, ShopClient, SpinClient, DailyService and SpinService were updated.
+  - Re-checked against the full ec82cfa manifest: again only DesignDoc differs.
+  - File > Publish showed "Published... v21". The games API reports `updated` 2026-11-09T17:32:55Z.
+- **No server restart** (the owner's rule): new servers pick it up.
+- **After:** git HEAD = live v21.
