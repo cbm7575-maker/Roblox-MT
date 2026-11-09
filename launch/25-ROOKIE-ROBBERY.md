@@ -1,8 +1,8 @@
 # 25. Rookie robbery + FirstRob funnel (Nov 8, 2026)
 
 **Status: LIVE as v20** (published Nov 9 2026, 03:33:29 UTC = Nov 8, 8:33 PM MST, on the owner's "Yes, publish
-it"). No server restart: running servers stay on v19 until they empty, and new servers get v20. **Not committed
-yet** (git HEAD is still 1bb4dfb = v19).
+it"). No server restart: running servers stay on v19 until they empty, and new servers get v20. Committed as
+29b6317, so git HEAD = live v20.
 Built, logic-tested and Studio-tested (Play Solo). The Studio test also found a pre-existing problem on phones
 (the tutorial's guide line covered the ROB button at the store), fixed in section 3.
 
